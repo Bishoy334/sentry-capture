@@ -183,6 +183,12 @@ private struct PrefsScreenshotsPane: View {
                 }
                 TextField("Filename prefix", text: $settings.filenamePrefix)
                 Toggle("Scale Retina screenshots down to 1x", isOn: $settings.downscaleRetina)
+                Toggle("Freeze screen while selecting", isOn: $settings.freezeSelectionScreen)
+                Picker("Self-timer delay", selection: $settings.selfTimerSeconds) {
+                    Text("3 seconds").tag(3)
+                    Text("5 seconds").tag(5)
+                    Text("10 seconds").tag(10)
+                }
             }
             Section {
                 LabeledContent("Save location") {

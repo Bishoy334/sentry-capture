@@ -171,6 +171,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     }
                 }
             }
+        case .timedCapture:
+            SelectionController.shared.begin(mode: .still) { selection in
+                guard var selection else { return }
+                // The countdown exists to stage the screen (open a menu, hover
+                // a state) — so the eventual capture must be LIVE, not the
+                // frozen frame the selection was made on.
+                selection.frozen = nil
+                Task { @MainActor in
+                    let seconds = max(1, Settings.shared.selfTimerSeconds)
+                    for remaining in stride(from: seconds, through: 1, by: -1) {
+                        Toast.show("Capturing in \(remaining)…", symbol: "timer", duration: 0.9)
+                        try? await Task.sleep(for: .seconds(1))
+                    }
+                    if let still = await self.capture(selection) {
+                        OutputRouter.shared.deliver(still)
+                    }
+                }
+            }
         case .pinArea:
             SelectionController.shared.begin(mode: .pin) { selection in
                 guard let selection else { return }
@@ -206,6 +224,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     appName: window.owningApplication?.applicationName,
                     windowTitle: window.title,
                     displayID: selection.display.displayID)
+            } else if let frozen = selection.frozen {
+                // The overlay froze the screen — crop the frozen frame so the
+                // user gets exactly the pixels they selected (menus, hover
+                // states), not a re-shoot after the overlay closed.
+                let origin = CaptureOrigin.frontmost(displayID: selection.display.displayID)
+                let scale = frozen.scale
+                let px = CGRect(
+                    x: (selection.rect.minX - selection.display.frame.minX) * scale,
+                    y: (selection.rect.minY - selection.display.frame.minY) * scale,
+                    width: selection.rect.width * scale,
+                    height: selection.rect.height * scale
+                ).integral.intersection(
+                    CGRect(x: 0, y: 0, width: frozen.image.width, height: frozen.image.height))
+                guard let cropped = frozen.image.cropping(to: px) else {
+                    throw CaptureError.captureFailed("frozen crop out of bounds")
+                }
+                still = StillCapture(
+                    image: cropped, scale: scale, source: .area,
+                    screenRect: selection.rect, origin: origin)
             } else {
                 let origin = CaptureOrigin.frontmost(displayID: selection.display.displayID)
                 still = try await CaptureEngine.shared.captureRect(selection.rect)
@@ -239,7 +276,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(.separator())
         }
 
-        for action in [HotkeyAction.captureArea, .captureWindow, .captureFullscreen, .scrollingCapture] {
+        for action in [HotkeyAction.captureArea, .captureWindow, .captureFullscreen, .timedCapture, .scrollingCapture] {
             menu.addItem(actionItem(action))
         }
         menu.addItem(.separator())

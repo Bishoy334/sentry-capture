@@ -111,6 +111,7 @@ enum HotkeyAction: String, CaseIterable, Codable {
     case recordGIF
     case copyText
     case pinArea
+    case timedCapture
 
     var title: String {
         switch self {
@@ -122,6 +123,7 @@ enum HotkeyAction: String, CaseIterable, Codable {
         case .recordGIF: return "Record GIF"
         case .copyText: return "Copy Text (OCR)"
         case .pinArea: return "Pin Area"
+        case .timedCapture: return "Timed Area Capture"
         }
     }
 
@@ -137,7 +139,7 @@ enum HotkeyAction: String, CaseIterable, Codable {
         case .scrollingCapture: return Hotkey(keyCode: UInt32(kVK_ANSI_6), carbonModifiers: optionCmd)
         case .recordVideo: return Hotkey(keyCode: UInt32(kVK_ANSI_7), carbonModifiers: optionCmd)
         case .pinArea: return Hotkey(keyCode: UInt32(kVK_ANSI_8), carbonModifiers: optionCmd)
-        case .recordGIF: return nil
+        case .recordGIF, .timedCapture: return nil
         }
     }
 }

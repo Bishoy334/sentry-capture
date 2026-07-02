@@ -16,6 +16,10 @@ final class SelectionController {
         let rect: CGRect        // global CG top-left-origin points
         let window: SCWindow?   // non-nil when the user picked a window
         let display: SCDisplay  // the display containing the selection
+        /// Full-display capture taken when the overlay froze the screen —
+        /// area captures crop this instead of re-shooting, so what the user
+        /// selected (hover states, open menus) is exactly what they get.
+        var frozen: StillCapture? = nil
     }
 
     private(set) var isActive = false
@@ -37,6 +41,10 @@ final class SelectionController {
 
     private var mode: Mode = .still
     private var content: SCShareableContent?
+    /// Frozen full-display captures, keyed by display id; taken BEFORE the
+    /// panels show, so they never need self-exclusion.
+    private var frozen: [CGDirectDisplayID: StillCapture] = [:]
+    fileprivate var frozenImages: [CGDirectDisplayID: NSImage] = [:]
     fileprivate var mouseCG: CGPoint = .zero
     fileprivate var hoverWindow: SCWindow?
     fileprivate var isDragging = false
@@ -58,6 +66,15 @@ final class SelectionController {
         switch mode {
         case .still, .window, .record: return true
         case .scrolling, .ocr, .pin: return false
+        }
+    }
+
+    /// Freezing suits point-in-time captures; live flows (recording,
+    /// scrolling) must keep showing the real screen.
+    private var freezeAllowed: Bool {
+        switch mode {
+        case .still, .window, .ocr, .pin: return Settings.shared.freezeSelectionScreen
+        case .record, .scrolling: return false
         }
     }
 
@@ -87,6 +104,16 @@ final class SelectionController {
                     true, onScreenWindowsOnly: true)
                 guard self.isActive, self.generation == gen else { return }
                 self.content = fetched
+                if self.freezeAllowed {
+                    for display in fetched.displays {
+                        guard let still = try? await CaptureEngine.shared.captureDisplay(display),
+                              self.isActive, self.generation == gen else { continue }
+                        self.frozen[display.displayID] = still
+                        self.frozenImages[display.displayID] = NSImage(
+                            cgImage: still.image, size: still.pointSize)
+                    }
+                    guard self.isActive, self.generation == gen else { return }
+                }
                 self.presentOverlay()
             } catch {
                 guard self.isActive, self.generation == gen else { return }
@@ -170,6 +197,8 @@ final class SelectionController {
         }
 
         content = nil
+        frozen.removeAll()
+        frozenImages.removeAll()
         hoverWindow = nil
         isDragging = false
         dragPending = false
@@ -315,7 +344,9 @@ final class SelectionController {
             if rect.width >= 4, rect.height >= 4,
                let display = dragDisplay
                    ?? content.flatMap({ CaptureEngine.shared.display(containing: rect, in: $0) }) {
-                finish(with: Selection(rect: rect, window: nil, display: display))
+                finish(with: Selection(
+                    rect: rect, window: nil, display: display,
+                    frozen: frozen[display.displayID]))
             } else {
                 resetToIdle(at: p)
             }
@@ -385,7 +416,8 @@ final class SelectionController {
               content.displays.contains(where: { $0.frame.intersects(rect) }),
               let display = CaptureEngine.shared.display(containing: rect, in: content)
         else { return }
-        finish(with: Selection(rect: rect, window: nil, display: display))
+        finish(with: Selection(
+            rect: rect, window: nil, display: display, frozen: frozen[display.displayID]))
     }
 
     // MARK: Invalidation (global CG rects -> per-screen dirty rects)
@@ -402,11 +434,17 @@ final class SelectionController {
         }
     }
 
+    fileprivate func frozenStill(for displayID: CGDirectDisplayID) -> StillCapture? {
+        frozen[displayID]
+    }
+
     private func invalidateCursorChrome(at p: CGPoint) {
         guard let v = view(containing: p) else { return }
         let local = v.viewPoint(fromCG: p)
         v.setNeedsDisplay(NSRect(x: local.x - 1, y: 0, width: 2, height: v.bounds.height))
         v.setNeedsDisplay(NSRect(x: 0, y: local.y - 1, width: v.bounds.width, height: 2))
+        // The loupe floats within ~140pt of the cursor on any side.
+        v.setNeedsDisplay(NSRect(x: local.x - 160, y: local.y - 160, width: 320, height: 320))
     }
 
     private func invalidateSelection(from old: CGRect, to new: CGRect) {
@@ -552,6 +590,14 @@ private final class SelectionOverlayView: NSView {
     // MARK: Drawing
 
     override func draw(_ dirtyRect: NSRect) {
+        // The frozen frame replaces the live screen underneath the dim — the
+        // user keeps "seeing the screen", but it can no longer change under
+        // the selection (and the loupe has stable pixels to magnify).
+        if let frozenImage = controller.frozenImages[displayID] {
+            frozenImage.draw(
+                in: bounds, from: .zero, operation: .sourceOver,
+                fraction: 1, respectFlipped: true, hints: [.interpolation: NSNumber(value: 1)])
+        }
         let selection: NSRect? = {
             guard controller.isDragging else { return nil }
             let cg = controller.currentDragRect()
@@ -591,8 +637,69 @@ private final class SelectionOverlayView: NSView {
 
         if screenFrameCG.contains(controller.mouseCG) {
             drawCrosshair(at: viewPoint(fromCG: controller.mouseCG))
+            drawLoupe(at: viewPoint(fromCG: controller.mouseCG))
             drawHintPill()
         }
+    }
+
+    /// Pixel loupe: 6x magnification of the frozen frame around the cursor,
+    /// with a centre tick and the cursor's point coordinates.
+    private func drawLoupe(at p: NSPoint) {
+        guard let still = controller.frozenStill(for: displayID) else { return }
+        let size: CGFloat = 110
+        let magnification: CGFloat = 6
+        var origin = NSPoint(x: p.x + 22, y: p.y + 22)
+        if origin.x + size > bounds.maxX - 8 { origin.x = p.x - size - 22 }
+        if origin.y + size + 22 > bounds.maxY - 8 { origin.y = p.y - size - 22 }
+        let rect = NSRect(x: origin.x, y: origin.y, width: size, height: size)
+
+        let sourceSide = size / magnification
+        let scale = still.scale
+        let pxHeight = CGFloat(still.image.height)
+        // View point -> top-left pixel coords -> bottom-left image space.
+        let cx = p.x * scale
+        let cyTL = p.y * scale
+        let half = sourceSide * scale / 2
+        let source = NSRect(
+            x: cx - half, y: pxHeight - cyTL - half,
+            width: sourceSide * scale, height: sourceSide * scale)
+
+        NSGraphicsContext.saveGraphicsState()
+        let clip = NSBezierPath(ovalIn: rect)
+        clip.addClip()
+        let image = controller.frozenImages[displayID]
+        // NSImage size is in points; from-rect is in the image's own space.
+        image?.draw(
+            in: rect,
+            from: NSRect(
+                x: source.minX / scale, y: source.minY / scale,
+                width: source.width / scale, height: source.height / scale),
+            operation: .sourceOver, fraction: 1, respectFlipped: false,
+            hints: [.interpolation: NSNumber(value: 1)])
+        NSGraphicsContext.restoreGraphicsState()
+
+        let ring = NSBezierPath(ovalIn: rect.insetBy(dx: 0.5, dy: 0.5))
+        ring.lineWidth = 1.5
+        NSColor.white.withAlphaComponent(0.9).setStroke()
+        ring.stroke()
+        // Centre tick: the pixel under the cursor.
+        let tick = NSRect(
+            x: rect.midX - magnification / scale / 2,
+            y: rect.midY - magnification / scale / 2,
+            width: magnification / scale * 2, height: magnification / scale * 2)
+        NSColor.controlAccentColor.setStroke()
+        NSBezierPath(rect: tick).stroke()
+
+        let coords = String(
+            format: "%.0f, %.0f", controller.mouseCG.x, controller.mouseCG.y)
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium),
+            .foregroundColor: NSColor.white,
+        ]
+        let textSize = (coords as NSString).size(withAttributes: attrs)
+        drawPill(text: coords, attrs: attrs, textSize: textSize, in: NSRect(
+            x: rect.midX - (textSize.width + 12) / 2, y: rect.maxY + 4,
+            width: textSize.width + 12, height: textSize.height + 6))
     }
 
     private func drawCrosshair(at p: NSPoint) {

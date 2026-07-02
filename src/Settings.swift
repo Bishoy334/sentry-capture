@@ -29,6 +29,8 @@ final class Settings: ObservableObject {
     @Published var videoFPS: Int
     @Published var gifFPS: Int
     @Published var recordingCountdown: Int
+    @Published var freezeSelectionScreen: Bool
+    @Published var selfTimerSeconds: Int
     @Published var hotkeys: [HotkeyAction: Hotkey?]
 
     var saveDirectory: URL {
@@ -73,6 +75,8 @@ final class Settings: ObservableObject {
         videoFPS = d.object(forKey: "videoFPS") as? Int ?? 60
         gifFPS = d.object(forKey: "gifFPS") as? Int ?? 12
         recordingCountdown = d.object(forKey: "recordingCountdown") as? Int ?? 3
+        freezeSelectionScreen = d.object(forKey: "freezeSelectionScreen") as? Bool ?? true
+        selfTimerSeconds = d.object(forKey: "selfTimerSeconds") as? Int ?? 5
 
         var loaded: [HotkeyAction: Hotkey?] = [:]
         let stored = (try? JSONDecoder().decode(
@@ -114,6 +118,8 @@ final class Settings: ObservableObject {
         d.set(videoFPS, forKey: "videoFPS")
         d.set(gifFPS, forKey: "gifFPS")
         d.set(recordingCountdown, forKey: "recordingCountdown")
+        d.set(freezeSelectionScreen, forKey: "freezeSelectionScreen")
+        d.set(selfTimerSeconds, forKey: "selfTimerSeconds")
         let encodable = Dictionary(uniqueKeysWithValues: hotkeys.map { ($0.key.rawValue, $0.value) })
         if let data = try? JSONEncoder().encode(encodable) {
             d.set(data, forKey: "hotkeys")
