@@ -93,6 +93,8 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         didSet {
             layoutBackdrop()
             refreshChrome()
+            // Padding growth must not push the document out of view.
+            zoomOutToFitIfNeeded()
         }
     }
 
@@ -152,6 +154,9 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         }
         canvas.onCanvasResized = { [weak self] in
             self?.layoutBackdrop()
+            // Merging images / spilling annotations grows the canvas — zoom
+            // out so the whole document stays in view.
+            self?.zoomOutToFitIfNeeded()
         }
 
         sizeWindowToImage()
@@ -1098,14 +1103,27 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     @objc private func zoomActualTapped() { setZoom(1) }
 
     @objc private func zoomFitTapped() {
+        guard let fit = fitMagnification() else { return }
+        setZoom(min(fit, 1))
+    }
+
+    /// Absolute magnification that fits the whole document. The clip view's
+    /// FRAME is the stable measure — its bounds are already divided by the
+    /// current magnification, which made Fit drift at any zoom but 100%.
+    private func fitMagnification() -> CGFloat? {
         let doc = backdrop.frame.size
-        guard doc.width > 0, doc.height > 0 else { return }
-        // Fit within the visible area minus the content insets' margin.
-        let visible = scrollView.contentView.bounds.size
+        guard doc.width > 0, doc.height > 0 else { return nil }
+        let clip = scrollView.contentView.frame.size
         let insets = scrollView.contentInsets
-        let fit = min(
-            (visible.width - insets.left - insets.right) / doc.width,
-            (visible.height - insets.top - insets.bottom) / doc.height)
+        return min(
+            (clip.width - insets.left - insets.right) / doc.width,
+            (clip.height - insets.top - insets.bottom) / doc.height)
+    }
+
+    /// Zoom OUT (never in) until the document fits — called when the canvas
+    /// grows under the user (image merge, padding, spilled annotations).
+    private func zoomOutToFitIfNeeded() {
+        guard let fit = fitMagnification(), fit < scrollView.magnification else { return }
         setZoom(min(fit, 1))
     }
 
