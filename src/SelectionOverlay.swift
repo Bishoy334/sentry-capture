@@ -56,8 +56,14 @@ final class SelectionController {
     /// All-in-One: a completed selection held on screen while the user picks
     /// an action from the strip.
     private var heldSelection: Selection?
-    private var movingHeld = false
-    private var moveLast: CGPoint = .zero
+    /// A drag that started on the held selection: inside slides it, on a
+    /// handle resizes it. Resizes work from the gesture-original rect so
+    /// dragging past the opposite edge can't collapse the rect.
+    private enum HeldDrag {
+        case move(last: CGPoint)
+        case resize(handle: SelectionHandle, original: CGRect, down: CGPoint)
+    }
+    private var heldDrag: HeldDrag?
     private var strip: AllInOneStrip?
     private var dragAnchor: CGPoint = .zero
     private var dragCurrent: CGPoint = .zero
@@ -190,6 +196,17 @@ final class SelectionController {
             let strip = AllInOneStrip(screen: mouseScreen) { [weak self] action in
                 self?.stripPicked(action)
             }
+            strip.onSizeChange = { [weak self] width, height in
+                self?.resizeHeld(width: width, height: height)
+            }
+            strip.onEditingEnded = { [weak self] in
+                // Hand key back to the overlay so Esc/Return work again.
+                guard let self else { return }
+                let held = self.heldSelection?.rect
+                let target = zip(self.panels, self.views)
+                    .first { held.map($0.1.screenFrameCG.intersects) ?? false }?.0
+                (target ?? self.panels.first)?.makeKeyAndOrderFront(nil)
+            }
             strip.setSelectionAvailable(false)
             strip.orderFrontRegardless()
             self.strip = strip
@@ -229,16 +246,33 @@ final class SelectionController {
         invalidate(cg: old)
         invalidateSelection(from: selection.rect, to: selection.rect)
         strip?.setSelectionAvailable(true)
+        strip?.setSize(selection.rect.size)
         for v in views { v.invalidateHintArea() }
     }
 
     private func clearHeld() {
         guard let held = heldSelection else { return }
         heldSelection = nil
-        movingHeld = false
+        heldDrag = nil
         strip?.setSelectionAvailable(false)
+        strip?.setSize(nil)
         invalidateSelection(from: held.rect, to: held.rect)
         resetToIdle(at: mouseCG)
+    }
+
+    /// Exact-size entry from the strip: resizes the held selection anchored
+    /// at its top-left, clamped to its display.
+    private func resizeHeld(width: CGFloat?, height: CGFloat?) {
+        guard var held = heldSelection else { return }
+        let f = held.display.frame
+        let old = held.rect
+        var r = old
+        if let width { r.size.width = min(max(width, 10), f.maxX - r.minX) }
+        if let height { r.size.height = min(max(height, 10), f.maxY - r.minY) }
+        held.rect = r
+        heldSelection = held
+        invalidateSelection(from: old, to: r)
+        strip?.setSize(r.size)
     }
 
     private func finish(with selection: Selection?) {
@@ -261,7 +295,7 @@ final class SelectionController {
         strip?.orderOut(nil)
         strip = nil
         heldSelection = nil
-        movingHeld = false
+        heldDrag = nil
 
         if cursorPushed {
             NSCursor.pop()
@@ -365,11 +399,16 @@ final class SelectionController {
 
     fileprivate func handleMouseDown(at p: CGPoint, on view: SelectionOverlayView) {
         guard isActive, !isDragging else { return }
-        if let held = heldSelection, held.rect.contains(p) {
-            // Dragging inside the held selection slides it; outside starts over.
-            movingHeld = true
-            moveLast = p
-            return
+        if let held = heldSelection {
+            // On a handle resizes, inside slides, outside starts over.
+            if let handle = SelectionHandle.hit(p, rect: held.rect) {
+                heldDrag = .resize(handle: handle, original: held.rect, down: p)
+                return
+            }
+            if held.rect.contains(p) {
+                heldDrag = .move(last: p)
+                return
+            }
         }
         mouseCG = p
         lastMouseCG = p
@@ -384,17 +423,24 @@ final class SelectionController {
 
     fileprivate func handleMouseDragged(to p: CGPoint, shift: Bool) {
         guard isActive else { return }
-        if movingHeld, var held = heldSelection {
+        if let drag = heldDrag, var held = heldSelection {
             let f = held.display.frame
-            var dx = p.x - moveLast.x
-            var dy = p.y - moveLast.y
-            dx = min(max(dx, f.minX - held.rect.minX), f.maxX - held.rect.maxX)
-            dy = min(max(dy, f.minY - held.rect.minY), f.maxY - held.rect.maxY)
             let old = held.rect
-            held.rect = held.rect.offsetBy(dx: dx, dy: dy)
+            switch drag {
+            case .move(let last):
+                var dx = p.x - last.x
+                var dy = p.y - last.y
+                dx = min(max(dx, f.minX - held.rect.minX), f.maxX - held.rect.maxX)
+                dy = min(max(dy, f.minY - held.rect.minY), f.maxY - held.rect.maxY)
+                held.rect = held.rect.offsetBy(dx: dx, dy: dy)
+                heldDrag = .move(last: p)
+            case .resize(let handle, let original, let down):
+                held.rect = handle.resized(
+                    original, dx: p.x - down.x, dy: p.y - down.y, within: f)
+            }
             heldSelection = held
-            moveLast = p
             invalidateSelection(from: old, to: held.rect)
+            strip?.setSize(held.rect.size)
             return
         }
         guard dragPending || isDragging else { return }
@@ -431,8 +477,8 @@ final class SelectionController {
     fileprivate func handleMouseUp(at p: CGPoint) {
         guard isActive else { return }
         defer { dragPending = false }
-        if movingHeld {
-            movingHeld = false
+        if heldDrag != nil {
+            heldDrag = nil
             return
         }
         if isDragging {
@@ -747,6 +793,9 @@ private final class SelectionOverlayView: NSView {
             NSColor.controlAccentColor.setStroke()
             border.stroke()
             drawSizeLabel(for: selection)
+            if !controller.isDragging, controller.heldRect != nil {
+                drawResizeHandles(for: selection)
+            }
         }
         guard !controller.isDragging, controller.heldRect == nil else { return }
 
@@ -829,6 +878,20 @@ private final class SelectionOverlayView: NSView {
             width: textSize.width + 12, height: textSize.height + 6))
     }
 
+    private func drawResizeHandles(for selection: NSRect) {
+        let side: CGFloat = 7
+        for handle in SelectionHandle.allCases {
+            let c = handle.point(in: selection)
+            let rect = NSRect(x: c.x - side / 2, y: c.y - side / 2, width: side, height: side)
+            NSColor.white.setFill()
+            NSBezierPath(rect: rect).fill()
+            let stroke = NSBezierPath(rect: rect)
+            stroke.lineWidth = 1
+            NSColor.controlAccentColor.setStroke()
+            stroke.stroke()
+        }
+    }
+
     private func drawCrosshair(at p: NSPoint) {
         NSColor.white.withAlphaComponent(0.35).setFill()
         NSRect(x: p.x - 0.5, y: 0, width: 1, height: bounds.height).fill()
@@ -883,15 +946,60 @@ private final class SelectionOverlayView: NSView {
 }
 
 
+// MARK: - Held-selection resize handles
+
+/// The eight resize handles on a held All-in-One selection, in global CG
+/// top-left space (top = minY edge).
+enum SelectionHandle: CaseIterable {
+    case topLeft, top, topRight, right, bottomRight, bottom, bottomLeft, left
+
+    var movesLeft: Bool { self == .topLeft || self == .left || self == .bottomLeft }
+    var movesRight: Bool { self == .topRight || self == .right || self == .bottomRight }
+    var movesTop: Bool { self == .topLeft || self == .top || self == .topRight }
+    var movesBottom: Bool { self == .bottomLeft || self == .bottom || self == .bottomRight }
+
+    func point(in r: CGRect) -> CGPoint {
+        let x = movesLeft ? r.minX : (movesRight ? r.maxX : r.midX)
+        let y = movesTop ? r.minY : (movesBottom ? r.maxY : r.midY)
+        return CGPoint(x: x, y: y)
+    }
+
+    static func hit(_ p: CGPoint, rect: CGRect, radius: CGFloat = 8) -> SelectionHandle? {
+        allCases
+            .map { (handle: $0, d: hypot(p.x - $0.point(in: rect).x, p.y - $0.point(in: rect).y)) }
+            .filter { $0.d <= radius }
+            .min { $0.d < $1.d }?
+            .handle
+    }
+
+    /// New rect from the gesture-original rect with this handle's edges moved
+    /// by the drag delta, clamped to the display and a 10pt minimum side.
+    func resized(_ original: CGRect, dx: CGFloat, dy: CGFloat, within f: CGRect) -> CGRect {
+        var minX = original.minX, minY = original.minY
+        var maxX = original.maxX, maxY = original.maxY
+        if movesLeft { minX = min(max(f.minX, original.minX + dx), maxX - 10) }
+        if movesRight { maxX = max(min(f.maxX, original.maxX + dx), minX + 10) }
+        if movesTop { minY = min(max(f.minY, original.minY + dy), maxY - 10) }
+        if movesBottom { maxY = max(min(f.maxY, original.maxY + dy), minY + 10) }
+        return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+    }
+}
+
 // MARK: - All-in-One action strip
 
 /// Floating action bar for All-in-One mode: pick what happens to the held
 /// selection. Non-activating so the frontmost app keeps focus; sits above the
 /// overlay panels at the same level by ordering after them.
 @MainActor
-private final class AllInOneStrip: NSPanel {
+private final class AllInOneStrip: NSPanel, NSTextFieldDelegate {
     private let onPick: (HotkeyAction?) -> Void
+    /// Exact-size entry commits: (width, height) — nil leaves that axis alone.
+    var onSizeChange: ((CGFloat?, CGFloat?) -> Void)?
+    /// Fired when field editing ends so the overlay can take key back.
+    var onEditingEnded: (() -> Void)?
     private var selectionButtons: [NSButton] = []
+    private var widthField: NSTextField!
+    private var heightField: NSTextField!
 
     init(screen: NSScreen, onPick: @escaping (HotkeyAction?) -> Void) {
         self.onPick = onPick
@@ -924,17 +1032,28 @@ private final class AllInOneStrip: NSPanel {
         stack.orientation = .horizontal
         stack.spacing = 2
         stack.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)
+
+        // Exact-size entry: type a width/height, Return commits.
+        widthField = sizeField(placeholder: "W")
+        heightField = sizeField(placeholder: "H")
+        let xLabel = NSTextField(labelWithString: "×")
+        xLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        xLabel.textColor = NSColor.white.withAlphaComponent(0.6)
+        stack.addArrangedSubview(widthField)
+        stack.addArrangedSubview(xLabel)
+        stack.addArrangedSubview(heightField)
+        stack.addArrangedSubview(stripDivider())
+        stack.setCustomSpacing(4, after: widthField)
+        stack.setCustomSpacing(4, after: xLabel)
+        stack.setCustomSpacing(8, after: heightField)
+        stack.setCustomSpacing(8, after: stack.arrangedSubviews[stack.arrangedSubviews.count - 1])
+
         for (i, entry) in entries.enumerated() {
             let button = stripButton(symbol: entry.symbol, label: entry.label, tag: i)
             stack.addArrangedSubview(button)
             if entry.needsSelection { selectionButtons.append(button) }
         }
-        let divider = NSView()
-        divider.wantsLayer = true
-        divider.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.15).cgColor
-        divider.translatesAutoresizingMaskIntoConstraints = false
-        divider.widthAnchor.constraint(equalToConstant: 1).isActive = true
-        divider.heightAnchor.constraint(equalToConstant: 26).isActive = true
+        let divider = stripDivider()
         stack.addArrangedSubview(divider)
         stack.setCustomSpacing(8, after: stack.arrangedSubviews[stack.arrangedSubviews.count - 2])
         stack.setCustomSpacing(8, after: divider)
@@ -968,6 +1087,62 @@ private final class AllInOneStrip: NSPanel {
     }
 
     private var entriesActions: [HotkeyAction?] = []
+
+    private func stripDivider() -> NSView {
+        let divider = NSView()
+        divider.wantsLayer = true
+        divider.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.15).cgColor
+        divider.translatesAutoresizingMaskIntoConstraints = false
+        divider.widthAnchor.constraint(equalToConstant: 1).isActive = true
+        divider.heightAnchor.constraint(equalToConstant: 26).isActive = true
+        return divider
+    }
+
+    private func sizeField(placeholder: String) -> NSTextField {
+        let field = NSTextField()
+        field.placeholderString = placeholder
+        field.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        field.alignment = .center
+        field.controlSize = .small
+        field.bezelStyle = .roundedBezel
+        field.isEnabled = false
+        field.delegate = self
+        field.translatesAutoresizingMaskIntoConstraints = false
+        field.widthAnchor.constraint(equalToConstant: 48).isActive = true
+        return field
+    }
+
+    /// Reflect the held selection's size; nil disables the fields (no selection).
+    func setSize(_ size: CGSize?) {
+        for (field, value) in [(widthField, size?.width), (heightField, size?.height)] {
+            guard let field else { continue }
+            field.isEnabled = value != nil
+            // Never fight the user's in-progress typing.
+            if field.currentEditor() == nil {
+                field.stringValue = value.map { String(Int($0.rounded())) } ?? ""
+            }
+        }
+    }
+
+    func controlTextDidEndEditing(_ notification: Notification) {
+        guard let field = notification.object as? NSTextField else { return }
+        if let value = Double(field.stringValue), value > 0 {
+            onSizeChange?(
+                field === widthField ? CGFloat(value) : nil,
+                field === heightField ? CGFloat(value) : nil)
+        }
+        let movement = notification.userInfo?["NSTextMovement"] as? Int
+        if movement == NSTextMovement.return.rawValue {
+            makeFirstResponder(nil)
+            onEditingEnded?()
+        }
+    }
+
+    /// Esc while editing must not close the strip (NSPanel's default cancel).
+    override func cancelOperation(_ sender: Any?) {
+        makeFirstResponder(nil)
+        onEditingEnded?()
+    }
 
     private func stripButton(symbol: String, label: String, tag: Int) -> NSButton {
         let button = NSButton()
@@ -1005,5 +1180,7 @@ private final class AllInOneStrip: NSPanel {
         }
     }
 
-    override var canBecomeKey: Bool { false }
+    // Key-capable for the size fields; becomesKeyOnlyIfNeeded means only a
+    // field click takes key — the action buttons never steal it.
+    override var canBecomeKey: Bool { true }
 }
