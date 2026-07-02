@@ -4,7 +4,8 @@ import CoreMedia
 import ScreenCaptureKit
 
 /// Screen recording: border chrome + pre-record control strip + countdown,
-/// then an SCStream + SCRecordingOutput pipeline. GIF recordings run the same
+/// then an SCStream feeding a RecordingWriter (AVAssetWriter) — the writer
+/// path exists so recordings can pause/resume. GIF recordings run the same
 /// pipeline and convert on stop via GIFExporter.
 @MainActor
 final class RecordingController {
@@ -18,14 +19,14 @@ final class RecordingController {
     }
 
     private(set) var isRecording = false
+    private(set) var isPaused = false
     var onStateChange: (() -> Void)?
 
-    /// Authoritative elapsed time — capture start is async, so a wall clock
-    /// started at button-press drifts ~0.5s.
+    /// Authoritative elapsed time: what the writer has actually appended —
+    /// paused stretches don't count, and capture start is async so a wall
+    /// clock started at button-press drifts ~0.5s.
     var recordedDuration: TimeInterval {
-        guard let output = recordingOutput else { return 0 }
-        let seconds = output.recordedDuration.seconds
-        return seconds.isFinite ? seconds : 0
+        writerEngine?.elapsedSeconds ?? 0
     }
 
     private var phase: Phase = .idle
@@ -34,9 +35,10 @@ final class RecordingController {
     private var origin: CaptureOrigin?
 
     private var stream: SCStream?
-    private var recordingOutput: SCRecordingOutput?
+    private var writerEngine: RecordingWriter?
     private var outputURL: URL?
     private let delegateProxy = RecorderDelegateProxy()
+    private var recordingHUD: RecordingHUDPanel?
     /// Keystroke HUD + webcam bubble — area recordings only (a window filter
     /// can't capture other windows, so overlays are invisible there).
     private var overlays: RecordingOverlays?
@@ -47,7 +49,6 @@ final class RecordingController {
     private var countdownPanel: NSPanel?
     private var countdownLabel: NSTextField?
     private var countdownTask: Task<Void, Never>?
-    private var userStopGraceTask: Task<Void, Never>?
     private var screenObserver: NSObjectProtocol?
 
     private init() {}
@@ -103,10 +104,23 @@ final class RecordingController {
         // throws .attemptToStopStreamState.
         guard let stream else { return }
         self.stream = nil
-        Task {
-            // Finalises the file; recordingOutputDidFinishRecording follows.
+        Task { @MainActor in
+            // No delegate callback follows a stop we initiated — finalise the
+            // writer ourselves.
             try? await stream.stopCapture()
+            self.finishSession(error: nil)
         }
+    }
+
+    /// Pause holds the file open while the writer drops frames; resume stitches
+    /// the timeline back together. Recording time excludes the hole.
+    func togglePause() {
+        guard phase == .recording, let writerEngine else { return }
+        isPaused.toggle()
+        writerEngine.setPaused(isPaused)
+        borderView?.colour = isPaused ? .systemOrange : .systemRed
+        recordingHUD?.setPaused(isPaused)
+        onStateChange?()
     }
 
     // MARK: Configure phase
@@ -164,6 +178,10 @@ final class RecordingController {
     private func startStream(selection: SelectionController.Selection, micUsable: Bool) async {
         hideControlStrip()
         let settings = Settings.shared
+        // The pause/stop HUD exists BEFORE the shareable-content fetch below so
+        // the window-level exclusion path snapshots it into the excluded list —
+        // it must never appear in the recording.
+        showRecordingHUD(for: selection)
 
         let filter: SCContentFilter
         if let window = selection.window {
@@ -244,21 +262,44 @@ final class RecordingController {
 
         let url = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("sentry-capture-\(UUID().uuidString).mp4")
-        let recConfig = SCRecordingOutputConfiguration()
-        recConfig.outputURL = url
-        recConfig.outputFileType = .mp4
-        recConfig.videoCodecType = .h264
-        let output = SCRecordingOutput(configuration: recConfig, delegate: delegateProxy)
+        let engine: RecordingWriter
+        do {
+            engine = try RecordingWriter(
+                url: url, width: config.width, height: config.height, fps: fps,
+                systemAudio: config.capturesAudio, microphone: micOn)
+        } catch {
+            phase = .recording   // finishSession's guard expects it
+            finishSession(error: error)
+            return
+        }
+        engine.onStarted = { [weak engine] in
+            Task { @MainActor in
+                guard let engine else { return }
+                RecordingController.shared.handleWriterStarted(engine)
+            }
+        }
+        engine.onFailed = { [weak engine] error in
+            Task { @MainActor in
+                guard let engine else { return }
+                RecordingController.shared.handleWriterFailed(engine, error: error)
+            }
+        }
         let stream = SCStream(filter: filter, configuration: config, delegate: delegateProxy)
 
-        // Commit state before the await: recordingOutputDidStartRecording can
-        // land while startCapture is still suspended.
-        recordingOutput = output
+        // Commit state before the await: the first frame can land while
+        // startCapture is still suspended.
+        writerEngine = engine
         outputURL = url
         phase = .recording
 
         do {
-            try stream.addRecordingOutput(output)
+            try stream.addStreamOutput(engine, type: .screen, sampleHandlerQueue: engine.queue)
+            if config.capturesAudio {
+                try stream.addStreamOutput(engine, type: .audio, sampleHandlerQueue: engine.queue)
+            }
+            if micOn {
+                try stream.addStreamOutput(engine, type: .microphone, sampleHandlerQueue: engine.queue)
+            }
             try await stream.startCapture()
         } catch {
             try? await stream.stopCapture()
@@ -281,24 +322,17 @@ final class RecordingController {
         observeScreenChanges()
     }
 
-    // MARK: Delegate arrivals (proxy hops to main, then here)
+    // MARK: Writer + stream arrivals (hopped to main, then here)
 
-    fileprivate func handleRecordingStarted(_ output: SCRecordingOutput) {
-        guard output === recordingOutput, phase == .recording else { return }
+    fileprivate func handleWriterStarted(_ engine: RecordingWriter) {
+        guard engine === writerEngine, phase == .recording else { return }
         isRecording = true
         onStateChange?()
     }
 
-    fileprivate func handleRecordingFailed(_ output: SCRecordingOutput, error: Error) {
-        guard output === recordingOutput else { return }
+    fileprivate func handleWriterFailed(_ engine: RecordingWriter, error: Error) {
+        guard engine === writerEngine else { return }
         finishSession(error: error)
-    }
-
-    fileprivate func handleRecordingFinished(_ output: SCRecordingOutput) {
-        guard output === recordingOutput else { return }
-        userStopGraceTask?.cancel()
-        userStopGraceTask = nil
-        finishSession(error: nil)
     }
 
     fileprivate func handleStreamStopped(error: Error) {
@@ -306,38 +340,26 @@ final class RecordingController {
         let nsError = error as NSError
         let userStopped = nsError.domain == SCStreamErrorDomain
             && SCStreamError.Code(rawValue: nsError.code) == .userStopped
-        if userStopped {
-            // Stop via the system's purple indicator: the output usually
-            // finalises right after — wait for didFinishRecording so we do
-            // not deliver a half-written mp4. Long recordings can take
-            // seconds to write the moov atom, hence the generous timeout.
-            guard userStopGraceTask == nil else { return }
-            userStopGraceTask = Task { @MainActor in
-                try? await Task.sleep(for: .seconds(5))
-                guard !Task.isCancelled else { return }
-                self.userStopGraceTask = nil
-                self.finishSession(error: nil)
-            }
-        } else {
-            finishSession(error: error)
-        }
+        // We own file finalisation now (the writer), so a stop from the
+        // system's purple indicator and a genuine failure both land in the
+        // same terminal path — the writer flushes whatever it appended.
+        finishSession(error: userStopped ? nil : error)
     }
 
     // MARK: The one terminal path
 
-    /// Every way a recording ends — finished, failed, stream died — lands here
-    /// exactly once (the phase guard swallows duplicate delegate callbacks).
+    /// Every way a recording ends — stopped, failed, stream died — lands here
+    /// exactly once (the phase guard swallows duplicate callbacks). The writer
+    /// finalises asynchronously; delivery waits for it.
     private func finishSession(error: Error?) {
         guard phase == .recording else { return }
         phase = .idle
 
-        // A failed recording output can leave the stream running.
+        // A failed writer can leave the stream running.
         if let stream {
             self.stream = nil
             Task { try? await stream.stopCapture() }
         }
-        userStopGraceTask?.cancel()
-        userStopGraceTask = nil
         countdownTask = nil
         if let screenObserver {
             NotificationCenter.default.removeObserver(screenObserver)
@@ -350,32 +372,48 @@ final class RecordingController {
         let wasGIF = asGIF
         let url = outputURL
         let capturedOrigin = origin
-        let duration = recordedDuration
+        let engine = writerEngine
         origin = nil
-        recordingOutput = nil
+        writerEngine = nil
         outputURL = nil
         selection = nil
         isRecording = false
+        isPaused = false
         onStateChange?()
 
         if let error {
             Toast.show("Recording failed: \(error.localizedDescription)",
                        symbol: "exclamationmark.triangle")
-            if let url { try? FileManager.default.removeItem(at: url) }
+            Task {
+                _ = try? await engine?.finish()
+                if let url { try? FileManager.default.removeItem(at: url) }
+            }
             return
         }
-        guard let url, FileManager.default.fileExists(atPath: url.path) else {
+        guard let url, let engine else {
             Toast.show("Recording produced no file", symbol: "exclamationmark.triangle")
             return
         }
 
-        if wasGIF {
-            Task { @MainActor in
+        Task { @MainActor in
+            let duration: Double
+            do {
+                duration = try await engine.finish()
+            } catch {
+                Toast.show("Recording failed: \(error.localizedDescription)",
+                           symbol: "exclamationmark.triangle")
+                try? FileManager.default.removeItem(at: url)
+                return
+            }
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                Toast.show("Recording produced no file", symbol: "exclamationmark.triangle")
+                return
+            }
+            if wasGIF {
                 // CGImageDestination holds every frame until finalise — an
                 // unbounded GIF balloons into gigabytes. Past two minutes,
                 // keep the MP4 instead of pretending.
-                let seconds = (try? await AVURLAsset(url: url).load(.duration).seconds) ?? 0
-                guard seconds <= 120 else {
+                guard duration <= 120 else {
                     Toast.show("Recording too long for a GIF — saved as MP4",
                                symbol: "exclamationmark.triangle")
                     OutputRouter.shared.deliver(VideoCapture(
@@ -396,10 +434,10 @@ final class RecordingController {
                     OutputRouter.shared.deliver(VideoCapture(
                         url: url, isGIF: false, origin: capturedOrigin, durationSeconds: duration))
                 }
+            } else {
+                OutputRouter.shared.deliver(VideoCapture(
+                    url: url, isGIF: false, origin: capturedOrigin, durationSeconds: duration))
             }
-        } else {
-            OutputRouter.shared.deliver(VideoCapture(
-                url: url, isGIF: false, origin: capturedOrigin, durationSeconds: duration))
         }
     }
 
@@ -555,39 +593,151 @@ final class RecordingController {
     private func removePanels() {
         hideControlStrip()
         hideCountdown()
+        recordingHUD?.orderOut(nil)
+        recordingHUD = nil
         borderPanel?.orderOut(nil)
         borderPanel = nil
         borderView = nil
+    }
+
+    // MARK: Recording HUD (elapsed · pause · stop)
+
+    private func showRecordingHUD(for selection: SelectionController.Selection) {
+        guard recordingHUD == nil else { return }
+        let hud = RecordingHUDPanel(
+            displayFrameCG: selection.display.frame,
+            onPause: { RecordingController.shared.togglePause() },
+            onStop: { RecordingController.shared.stop() })
+        hud.orderFrontRegardless()
+        recordingHUD = hud
     }
 }
 
 // MARK: - Delegate proxy
 
-/// SCStream/SCRecordingOutput callbacks arrive on an internal queue; this
-/// nonisolated shim hops them onto the main actor.
-private final class RecorderDelegateProxy: NSObject, SCStreamDelegate, SCRecordingOutputDelegate {
-    func recordingOutputDidStartRecording(_ recordingOutput: SCRecordingOutput) {
-        Task { @MainActor in
-            RecordingController.shared.handleRecordingStarted(recordingOutput)
-        }
-    }
-
-    func recordingOutput(_ recordingOutput: SCRecordingOutput, didFailWithError error: Error) {
-        Task { @MainActor in
-            RecordingController.shared.handleRecordingFailed(recordingOutput, error: error)
-        }
-    }
-
-    func recordingOutputDidFinishRecording(_ recordingOutput: SCRecordingOutput) {
-        Task { @MainActor in
-            RecordingController.shared.handleRecordingFinished(recordingOutput)
-        }
-    }
-
+/// SCStream callbacks arrive on an internal queue; this nonisolated shim hops
+/// them onto the main actor.
+private final class RecorderDelegateProxy: NSObject, SCStreamDelegate {
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         Task { @MainActor in
             RecordingController.shared.handleStreamStopped(error: error)
         }
+    }
+}
+
+// MARK: - Recording HUD
+
+/// Floating pill shown while recording: elapsed time, pause/resume, stop.
+/// Bottom-centre of the recorded display, draggable; created before the
+/// content filter is built so it lands in the exclusion list.
+@MainActor
+private final class RecordingHUDPanel: NSPanel {
+    private let onPause: () -> Void
+    private let elapsedLabel = NSTextField(labelWithString: "0:00")
+    private let dot = NSView()
+    private var pauseButton: NSButton!
+    private var timer: Timer?
+
+    init(displayFrameCG: CGRect, onPause: @escaping () -> Void, onStop: @escaping () -> Void) {
+        self.onPause = onPause
+        super.init(
+            contentRect: NSRect(x: 0, y: 0, width: 200, height: 40),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered, defer: false)
+        isOpaque = false
+        backgroundColor = .clear
+        hasShadow = true
+        level = .statusBar
+        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        hidesOnDeactivate = false
+        isMovableByWindowBackground = true
+        isReleasedWhenClosed = false
+        animationBehavior = .none
+
+        dot.wantsLayer = true
+        dot.layer?.backgroundColor = NSColor.systemRed.cgColor
+        dot.layer?.cornerRadius = 4
+        dot.translatesAutoresizingMaskIntoConstraints = false
+        dot.widthAnchor.constraint(equalToConstant: 8).isActive = true
+        dot.heightAnchor.constraint(equalToConstant: 8).isActive = true
+
+        elapsedLabel.font = .monospacedDigitSystemFont(ofSize: 13, weight: .medium)
+        elapsedLabel.textColor = .white
+
+        func iconButton(_ symbol: String, tip: String, action: Selector) -> NSButton {
+            let button = NSButton()
+            button.isBordered = false
+            button.setButtonType(.momentaryChange)
+            button.imagePosition = .imageOnly
+            button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: tip)?
+                .withSymbolConfiguration(.init(pointSize: 13, weight: .semibold))
+            button.contentTintColor = .white
+            button.toolTip = tip
+            button.target = self
+            button.action = action
+            return button
+        }
+        pauseButton = iconButton("pause.fill", tip: "Pause", action: #selector(pauseTapped))
+        let stopButton = iconButton("stop.fill", tip: "Stop", action: #selector(stopTapped))
+        stopButton.contentTintColor = .systemRed
+        self.onStopAction = onStop
+
+        let stack = NSStackView(views: [dot, elapsedLabel, pauseButton, stopButton])
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 10
+        stack.edgeInsets = NSEdgeInsets(top: 8, left: 14, bottom: 8, right: 12)
+
+        let card = HUDStyle.card(appearance: .vibrantDark)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: card.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: card.bottomAnchor),
+        ])
+        contentView = card
+
+        let size = stack.fittingSize
+        let display = Coords.appKitRect(fromCG: displayFrameCG)
+        setFrame(
+            NSRect(x: display.midX - size.width / 2, y: display.minY + 24,
+                   width: size.width, height: size.height),
+            display: false)
+
+        timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
+            MainActor.assumeIsolated {
+                let seconds = Int(RecordingController.shared.recordedDuration.rounded())
+                self.elapsedLabel.stringValue = String(format: "%d:%02d", seconds / 60, seconds % 60)
+            }
+        }
+    }
+
+    private var onStopAction: (() -> Void)?
+
+    func setPaused(_ paused: Bool) {
+        dot.layer?.backgroundColor =
+            (paused ? NSColor.systemOrange : .systemRed).cgColor
+        pauseButton.image = NSImage(
+            systemSymbolName: paused ? "play.fill" : "pause.fill",
+            accessibilityDescription: paused ? "Resume" : "Pause")?
+            .withSymbolConfiguration(.init(pointSize: 13, weight: .semibold))
+        pauseButton.toolTip = paused ? "Resume" : "Pause"
+    }
+
+    override func orderOut(_ sender: Any?) {
+        timer?.invalidate()
+        timer = nil
+        super.orderOut(sender)
+    }
+
+    @objc private func pauseTapped() {
+        onPause()
+    }
+
+    @objc private func stopTapped() {
+        onStopAction?()
     }
 }
 
