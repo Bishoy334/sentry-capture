@@ -61,6 +61,7 @@ enum Toast {
         p.isOpaque = false
         p.backgroundColor = .clear
         p.hasShadow = true
+        p.hidesOnDeactivate = false
         p.ignoresMouseEvents = true
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
         p.contentView = container

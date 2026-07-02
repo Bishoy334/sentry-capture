@@ -16,6 +16,10 @@ final class ScrollingCaptureController {
 
     private var session: ScrollingSession?
 
+    /// AppDelegate gates every other capture flow on this — a second overlay
+    /// over a live scrolling session gets stitched into the document.
+    var isActive: Bool { session != nil }
+
     func begin(selection: SelectionController.Selection) {
         guard session == nil else { return }
         // Window picks just borrow the window's frame — the capture itself
@@ -252,6 +256,14 @@ private final class ScrollingSession {
         statusLabel?.stringValue = "Captured \(count) px"
     }
 
+    /// The poll task decided to finish on its own (hard stop / page bottom) —
+    /// drop the chrome right away so the user isn't staring at dead buttons
+    /// while the composite builds.
+    func autoFinishBegan() {
+        guard !ended else { return }
+        teardownUI()
+    }
+
     func concludeFinished(with still: StillCapture?) {
         guard !ended else { return }
         teardownUI()
@@ -306,18 +318,24 @@ private final class ScrollingSession {
         // Built once. The fetch re-resolves the display so the filter never
         // wraps a stale handle; empty excludingWindows arrays hit a
         // zero-samples bug, so this exact excludingApplications spelling is
-        // load-bearing. It excludes nothing of ours — the HUD and border live
-        // outside the sourceRect instead.
+        // load-bearing. Excluding our own application keeps toasts (and any
+        // other of our windows that drift over the rect) out of the stitch;
+        // the HUD and border are kept outside the sourceRect as well.
         let scDisplay: SCDisplay
+        let ourApp: SCRunningApplication?
         do {
             let content = try await CaptureEngine.shared.shareableContent()
             scDisplay = content.displays.first { $0.displayID == display.displayID } ?? display
+            let pid = ProcessInfo.processInfo.processIdentifier
+            ourApp = content.applications.first { $0.processID == pid }
         } catch {
             await session.fail(message: error.localizedDescription)
             return
         }
         let filter = SCContentFilter(
-            display: scDisplay, excludingApplications: [], exceptingWindows: [])
+            display: scDisplay,
+            excludingApplications: ourApp.map { [$0] } ?? [],
+            exceptingWindows: [])
         let scale = CGFloat(filter.pointPixelScale)
         let config = SCStreamConfiguration()
         config.pixelFormat = kCVPixelFormatType_32BGRA
@@ -365,6 +383,7 @@ private final class ScrollingSession {
 
                 if outcome.capturedPx >= ScrollingLimits.hardStopPx {
                     flags.finishRequested = true
+                    await session.autoFinishBegan()
                     break
                 }
                 if !warnedTall, outcome.capturedPx >= ScrollingLimits.warnPx {
@@ -378,6 +397,7 @@ private final class ScrollingSession {
                         zeroRun += 1
                         if zeroRun >= 4 { // page bottom reached
                             flags.finishRequested = true
+                            await session.autoFinishBegan()
                             break
                         }
                     } else if outcome.dyPx != 0 {

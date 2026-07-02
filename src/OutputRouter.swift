@@ -20,12 +20,24 @@ final class OutputRouter {
 
         var delivered = DeliveredCapture(payload: .still(still), fileURL: nil)
         // Save before copying: the pasteboard's file-URL representation must
-        // point at a file that already exists or Finder paste breaks.
+        // point at a file that already exists or Finder paste breaks. When
+        // both sinks want PNG, encode once and share the bytes — a scrolling
+        // composite costs seconds per encode.
+        var sharedPNG: Data?
         if settings.saveToDisk {
-            delivered.fileURL = save(still)
+            if settings.imageFormat == .png {
+                sharedPNG = encode(still, format: .png)
+                if let sharedPNG {
+                    let url = nextFileURL(ext: "png")
+                    delivered.fileURL = writeData(sharedPNG, to: url) ? url : nil
+                    if delivered.fileURL != nil { addRecent(url) }
+                }
+            } else {
+                delivered.fileURL = save(still)
+            }
         }
         if settings.copyToClipboard {
-            copyToClipboard(still, fileURL: delivered.fileURL)
+            copyToClipboard(still, fileURL: delivered.fileURL, pngData: sharedPNG)
         }
         if settings.showQuickAccess {
             QuickAccessOverlay.shared.push(delivered)
@@ -41,11 +53,14 @@ final class OutputRouter {
         // Recordings always land on disk: move from the temp location into place.
         let dest = nextFileURL(ext: video.isGIF ? "gif" : "mp4")
         do {
+            try FileManager.default.createDirectory(
+                at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
             try FileManager.default.moveItem(at: video.url, to: dest)
             delivered.fileURL = dest
             addRecent(dest)
         } catch {
             NSLog("failed to move recording into place: \(error)")
+            Toast.show("Could not save recording", symbol: "exclamationmark.triangle")
             delivered.fileURL = video.url
         }
         if settings.copyToClipboard, let url = delivered.fileURL {
@@ -61,12 +76,17 @@ final class OutputRouter {
 
     /// One pasteboard item, several representations, so every paste target
     /// picks what it understands: Finder takes the file URL, Slack/Chromium
-    /// take PNG, older Cocoa apps take TIFF.
-    func copyToClipboard(_ still: StillCapture, fileURL: URL? = nil) {
-        guard let png = encode(still, format: .png) else { return }
+    /// take PNG, older Cocoa apps take TIFF. Pass pngData to reuse an
+    /// already-encoded image instead of encoding again.
+    func copyToClipboard(_ still: StillCapture, fileURL: URL? = nil, pngData: Data? = nil) {
+        guard let png = pngData ?? encode(still, format: .png) else { return }
         let item = NSPasteboardItem()
         item.setData(png, forType: .png)
-        if let tiff = NSBitmapImageRep(cgImage: still.image).tiffRepresentation {
+        // Skip the TIFF representation on very large images (scrolling
+        // composites) — it materialises width x height x 4 uncompressed in the
+        // pasteboard server, and modern paste targets all take PNG.
+        if still.image.width * still.image.height < 30_000_000,
+           let tiff = NSBitmapImageRep(cgImage: still.image).tiffRepresentation {
             item.setData(tiff, forType: .tiff)
         }
         if let fileURL {
@@ -115,6 +135,10 @@ final class OutputRouter {
 
     func write(_ still: StillCapture, to url: URL, format: ImageFormat) -> Bool {
         guard let data = encode(still, format: format) else { return false }
+        return writeData(data, to: url)
+    }
+
+    private func writeData(_ data: Data, to url: URL) -> Bool {
         do {
             try FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -127,11 +151,35 @@ final class OutputRouter {
         }
     }
 
+    /// Off-main-safe PNG encoder for background caching (the QAO pre-encodes
+    /// drag payloads so drags start instantly). Pure function of its inputs;
+    /// mirrors encode(_:format:) semantics for PNG.
+    nonisolated static func encodePNG(
+        image: CGImage, dpiScale: CGFloat, downscaleTo1x: Bool = false
+    ) -> Data? {
+        var image = image
+        var scale = dpiScale
+        if downscaleTo1x, dpiScale > 1, let smaller = downscale(image, by: dpiScale) {
+            image = smaller
+            scale = 1
+        }
+        let data = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(
+            data, UTType.png.identifier as CFString, 1, nil) else { return nil }
+        let props: [CFString: Any] = [
+            kCGImagePropertyDPIWidth: 72.0 * scale,
+            kCGImagePropertyDPIHeight: 72.0 * scale,
+        ]
+        CGImageDestinationAddImage(dest, image, props as CFDictionary)
+        guard CGImageDestinationFinalize(dest) else { return nil }
+        return data as Data
+    }
+
     func encode(_ still: StillCapture, format: ImageFormat) -> Data? {
         var image = still.image
         var scale = still.scale
         if Settings.shared.downscaleRetina, still.scale > 1 {
-            if let smaller = downscale(image, by: still.scale) {
+            if let smaller = Self.downscale(image, by: still.scale) {
                 image = smaller
                 scale = 1
             }
@@ -155,7 +203,7 @@ final class OutputRouter {
         return data as Data
     }
 
-    private func downscale(_ image: CGImage, by scale: CGFloat) -> CGImage? {
+    nonisolated private static func downscale(_ image: CGImage, by scale: CGFloat) -> CGImage? {
         let w = Int(CGFloat(image.width) / scale)
         let h = Int(CGFloat(image.height) / scale)
         guard let ctx = CGContext(
@@ -223,6 +271,12 @@ final class OutputRouter {
         recents.removeAll { $0 == url }
         recents.insert(url, at: 0)
         if recents.count > 10 { recents.removeLast(recents.count - 10) }
+        onRecentsChanged?()
+    }
+
+    /// Call when a capture file is trashed so the menu doesn't point at it.
+    func removeRecent(_ url: URL) {
+        recents.removeAll { $0 == url }
         onRecentsChanged?()
     }
 

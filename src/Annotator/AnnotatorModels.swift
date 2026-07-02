@@ -344,6 +344,11 @@ enum AnnotatorRender {
             case .pixelate, .blur:
                 if let patch = redactPatch {
                     blitFlipped(patch.image, in: patch.rect, ctx: ctx, canvasHeight: canvasHeight)
+                } else {
+                    // No patch = live drag on a big redact — placeholder so
+                    // the shape stays visible while it renders at mouseUp.
+                    ctx.setFillColor(NSColor.black.withAlphaComponent(0.35).cgColor)
+                    ctx.fill(a.rect)
                 }
             }
         }

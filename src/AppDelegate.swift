@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var recordingTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        installMainMenu()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         updateStatusIcon()
         menu.delegate = self
@@ -34,6 +35,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         HotkeyManager.shared.registerAll { [weak self] action in
             self?.dispatch(action)
         }
+    }
+
+    /// An accessory app has no menu bar by default, but Cmd-key editing
+    /// shortcuts in text fields are menu-driven — without an Edit menu,
+    /// Cmd-V/C/X/A are dead in Settings and text annotations, and Cmd-W
+    /// can't close windows. Window-level performKeyEquivalent overrides
+    /// (annotator) still win because windows get the event before the menu.
+    private func installMainMenu() {
+        let main = NSMenu()
+
+        let appItem = NSMenuItem()
+        let appMenu = NSMenu()
+        appMenu.addItem(NSMenuItem(
+            title: "Quit Sentry Capture",
+            action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        appItem.submenu = appMenu
+        main.addItem(appItem)
+
+        let fileItem = NSMenuItem()
+        let fileMenu = NSMenu(title: "File")
+        fileMenu.addItem(NSMenuItem(
+            title: "Close Window",
+            action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w"))
+        fileItem.submenu = fileMenu
+        main.addItem(fileItem)
+
+        let editItem = NSMenuItem()
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(NSMenuItem(title: "Undo", action: Selector(("undo:")), keyEquivalent: "z"))
+        editMenu.addItem(NSMenuItem(title: "Redo", action: Selector(("redo:")), keyEquivalent: "Z"))
+        editMenu.addItem(.separator())
+        editMenu.addItem(NSMenuItem(title: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x"))
+        editMenu.addItem(NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
+        editMenu.addItem(NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
+        editMenu.addItem(NSMenuItem(
+            title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
+        editItem.submenu = editMenu
+        main.addItem(editItem)
+
+        NSApp.mainMenu = main
     }
 
     private func updateStatusIcon() {
@@ -70,13 +111,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: Dispatch
 
     func dispatch(_ action: HotkeyAction) {
-        // Recording hotkey doubles as stop while a recording is live.
-        if RecordingController.shared.isRecording {
+        // Recording hotkey doubles as stop. Gate on isBusy, not isRecording:
+        // during the countdown / stream spin-up window isRecording is still
+        // false, and starting a second flow there records our own selection
+        // overlay into the live video.
+        if RecordingController.shared.isBusy {
             if action == .recordVideo || action == .recordGIF {
                 RecordingController.shared.stop()
             }
             return
         }
+        // A live scrolling session owns the screen: another overlay would be
+        // stitched into the document (and auto-scroll would scroll the
+        // overlay, not the page).
+        guard !ScrollingCaptureController.shared.isActive else { return }
         guard !SelectionController.shared.isActive else { return }
         guard CaptureEngine.shared.hasPermission else {
             CaptureEngine.shared.requestPermission()

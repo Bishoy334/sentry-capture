@@ -416,7 +416,11 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     @objc private func swatchTapped(_ sender: NSButton) {
         canvas.applyColour(Self.palette[sender.tag].colour)
         refreshChrome()
-        window.makeFirstResponder(canvas)
+        // Refocusing the canvas mid-text-edit force-commits the editor the
+        // moment a swatch is touched — leave focus with the editor.
+        if !canvas.isEditingText {
+            window.makeFirstResponder(canvas)
+        }
     }
 
     @objc private func strokeChanged(_ sender: NSSegmentedControl) {
@@ -426,7 +430,9 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
 
     @objc private func textSizeChanged(_ sender: NSSegmentedControl) {
         canvas.applyTextSize(Self.textSizes[sender.selectedSegment].size)
-        window.makeFirstResponder(canvas)
+        if !canvas.isEditingText {
+            window.makeFirstResponder(canvas)
+        }
     }
 
     @objc private func redactStyleChanged(_ sender: NSSegmentedControl) {

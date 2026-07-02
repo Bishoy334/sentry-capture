@@ -22,10 +22,14 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         case drawLine(id: UUID)
         case freehand(id: UUID)
         case move(id: UUID, last: CGPoint)
-        case resize(id: UUID, handle: AnnotatorHandle)
+        // original anchors the whole gesture: resizing iteratively from
+        // the current rect makes the fixed edge drift once the drag crosses
+        // the opposite edge (the normalised rect swaps min/max under the
+        // handle's feet).
+        case resize(id: UUID, handle: AnnotatorHandle, original: CGRect)
         case cropNew(anchor: CGPoint)
         case cropMove(last: CGPoint)
-        case cropResize(handle: AnnotatorHandle)
+        case cropResize(handle: AnnotatorHandle, original: CGRect)
     }
 
     // MARK: State
@@ -132,9 +136,25 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         if let entry = patchCache[a.id], entry.sourceRect == a.rect, entry.style == a.redactStyle {
             return entry.patch
         }
+        // Live-dragging a big redact would run a Core Image render plus a
+        // GPU-to-CPU readback per mouse event; the draw routine shows a
+        // placeholder fill instead, and the real patch lands at mouseUp.
+        if isLiveDragging(a.id),
+           a.rect.width * a.rect.height * imageScale * imageScale > 4_000_000 {
+            return nil
+        }
         let patch = redactRenderer.patch(forPointRect: a.rect, style: a.redactStyle)
         patchCache[a.id] = PatchEntry(sourceRect: a.rect, style: a.redactStyle, patch: patch)
         return patch
+    }
+
+    private func isLiveDragging(_ id: UUID) -> Bool {
+        switch drag {
+        case .drawRect(let d, _), .move(let d, _), .resize(let d, _, _):
+            return d == id
+        default:
+            return false
+        }
     }
 
     private func drawChrome(_ a: AnnotatorAnnotation, in ctx: CGContext) {
@@ -258,7 +278,7 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
     private func selectMouseDown(at p: CGPoint, clickCount: Int) {
         if let id = selectedID, let sel = annotation(id),
            let handle = AnnotatorHit.handleHit(AnnotatorHit.handles(for: sel), at: p, slop: 12 / zoom) {
-            drag = .resize(id: id, handle: handle)
+            drag = .resize(id: id, handle: handle, original: sel.rect)
             return
         }
         // Topmost annotation wins — iterate the array reversed.
@@ -280,7 +300,7 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
     private func cropMouseDown(at p: CGPoint) {
         if let handle = AnnotatorHit.handleHit(
             AnnotatorHit.rectHandles(cropRect), at: p, slop: 12 / zoom) {
-            drag = .cropResize(handle: handle)
+            drag = .cropResize(handle: handle, original: cropRect)
         } else if cropRect.contains(p) {
             drag = .cropMove(last: p)
         } else {
@@ -305,12 +325,12 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
             let d = CGPoint(x: p.x - last.x, y: p.y - last.y)
             update(id) { $0 = AnnotatorGeo.translate($0, by: d) }
             drag = .move(id: id, last: p)
-        case .resize(let id, let handle):
+        case .resize(let id, let handle, let original):
             update(id) {
                 switch handle {
                 case .lineStart: $0.start = p
                 case .lineEnd: $0.end = p
-                default: $0.rect = AnnotatorHit.resize($0.rect, handle: handle, to: p)
+                default: $0.rect = AnnotatorHit.resize(original, handle: handle, to: p)
                 }
             }
         case .cropNew(let anchor):
@@ -323,8 +343,8 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
             cropRect = r
             drag = .cropMove(last: p)
             needsDisplay = true
-        case .cropResize(let handle):
-            cropRect = AnnotatorHit.resize(cropRect, handle: handle, to: clampedToCanvas(p))
+        case .cropResize(let handle, let original):
+            cropRect = AnnotatorHit.resize(original, handle: handle, to: clampedToCanvas(p))
             needsDisplay = true
         }
     }
@@ -359,7 +379,20 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
             break
         }
         finishGesture(name: gestureName())
-        drag = .none
+        // A big redact drew a placeholder during the drag — with the gesture
+        // over, redraw so the real patch renders.
+        if case .drawRect(let id, _) = drag, let a = annotation(id), a.kind == .redact {
+            drag = .none
+            setNeedsDisplay(AnnotatorGeo.displayBounds(of: a))
+        } else if case .move(let id, _) = drag, let a = annotation(id), a.kind == .redact {
+            drag = .none
+            setNeedsDisplay(AnnotatorGeo.displayBounds(of: a))
+        } else if case .resize(let id, _, _) = drag, let a = annotation(id), a.kind == .redact {
+            drag = .none
+            setNeedsDisplay(AnnotatorGeo.displayBounds(of: a))
+        } else {
+            drag = .none
+        }
     }
 
     private func gestureName() -> String {
@@ -484,6 +517,11 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         if let tv = textEditor {
             tv.textColor = colour
             tv.insertionPointColor = colour
+            // Commit rebuilds an existing annotation's string from its stored
+            // fields — persist the choice or it silently reverts on commit.
+            if let id = editingTextID, let i = index(of: id) {
+                annotations[i].colour = colour
+            }
             return
         }
         guard let id = selectedID else { return }
@@ -511,6 +549,9 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         currentTextSize = size
         if let tv = textEditor {
             tv.font = NSFont.systemFont(ofSize: size, weight: .semibold)
+            if let id = editingTextID, let i = index(of: id) {
+                annotations[i].textSize = size
+            }
             growTextEditor()
             return
         }

@@ -155,6 +155,10 @@ private final class PinContentView: NSView {
 
     override var mouseDownCanMoveWindow: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    // becomesKeyOnlyIfNeeded panels only take key when a clicked view asks —
+    // without this, Cmd-W never reaches the panel and closes the frontmost
+    // app's window instead.
+    override var needsPanelToBecomeKey: Bool { true }
 
     // MARK: Hover
 

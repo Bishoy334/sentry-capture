@@ -64,7 +64,16 @@ final class RecordingController {
         onStateChange?()
     }
 
+    /// Anything but idle — the record hotkey must act as "stop/cancel" for
+    /// the whole configuring/countdown/spin-up window, not just once
+    /// isRecording flips (which lags stream start by hundreds of ms).
+    var isBusy: Bool { phase != .idle }
+
     func stop() {
+        if phase == .configuring || phase == .countdown {
+            cancelConfiguration()
+            return
+        }
         // Nil-guarding the stream makes stop idempotent — a second stopCapture
         // throws .attemptToStopStreamState.
         guard let stream else { return }
@@ -128,10 +137,18 @@ final class RecordingController {
         if let window = selection.window {
             filter = SCContentFilter(desktopIndependentWindow: window)
         } else {
-            // The excludingWindows: [] spelling has a known zero-samples bug on
-            // some macOS builds — this overload is the safe one.
+            // Exclude our whole application, not individual windows: QAO
+            // cards, toasts and pins must never appear in a recording, and
+            // app-level exclusion also covers windows created mid-recording.
+            // (The excludingWindows: [] spelling has a known zero-samples bug
+            // on some macOS builds — this overload is the safe one.)
+            let pid = ProcessInfo.processInfo.processIdentifier
+            let content = try? await CaptureEngine.shared.shareableContent()
+            let ourApp = content?.applications.first { $0.processID == pid }
             filter = SCContentFilter(
-                display: selection.display, excludingApplications: [], exceptingWindows: [])
+                display: selection.display,
+                excludingApplications: ourApp.map { [$0] } ?? [],
+                exceptingWindows: [])
         }
         let scale = CGFloat(filter.pointPixelScale)
 
@@ -230,11 +247,12 @@ final class RecordingController {
             && SCStreamError.Code(rawValue: nsError.code) == .userStopped
         if userStopped {
             // Stop via the system's purple indicator: the output usually
-            // finalises right after — give didFinishRecording a beat so we do
-            // not deliver a half-written mp4.
+            // finalises right after — wait for didFinishRecording so we do
+            // not deliver a half-written mp4. Long recordings can take
+            // seconds to write the moov atom, hence the generous timeout.
             guard userStopGraceTask == nil else { return }
             userStopGraceTask = Task { @MainActor in
-                try? await Task.sleep(for: .seconds(1))
+                try? await Task.sleep(for: .seconds(5))
                 guard !Task.isCancelled else { return }
                 self.userStopGraceTask = nil
                 self.finishSession(error: nil)
@@ -286,8 +304,18 @@ final class RecordingController {
         }
 
         if wasGIF {
-            Toast.show("Converting to GIF…", symbol: "arrow.triangle.2.circlepath")
             Task { @MainActor in
+                // CGImageDestination holds every frame until finalise — an
+                // unbounded GIF balloons into gigabytes. Past two minutes,
+                // keep the MP4 instead of pretending.
+                let seconds = (try? await AVURLAsset(url: url).load(.duration).seconds) ?? 0
+                guard seconds <= 120 else {
+                    Toast.show("Recording too long for a GIF — saved as MP4",
+                               symbol: "exclamationmark.triangle")
+                    OutputRouter.shared.deliver(VideoCapture(url: url, isGIF: false))
+                    return
+                }
+                Toast.show("Converting to GIF…", symbol: "arrow.triangle.2.circlepath")
                 do {
                     let gif = try await GIFExporter.export(
                         from: url, fps: Settings.shared.gifFPS, maxWidth: 1000)
@@ -497,9 +525,11 @@ private final class RecorderBorderView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        // Square corners: a rounded stroke's corner arcs intrude into the
+        // recorded rect (the panel is inflated by exactly one stroke width),
+        // baking coloured slivers into every recording corner.
         let inset = Self.strokeWidth / 2
-        let path = NSBezierPath(
-            roundedRect: bounds.insetBy(dx: inset, dy: inset), xRadius: 4, yRadius: 4)
+        let path = NSBezierPath(rect: bounds.insetBy(dx: inset, dy: inset))
         path.lineWidth = Self.strokeWidth
         colour.setStroke()
         path.stroke()

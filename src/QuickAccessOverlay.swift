@@ -194,6 +194,10 @@ private final class QAOCardView: NSView, NSDraggingSource {
     private var saveButton: QAOIconButton?
     private var mouseDownEvent: NSEvent?
     private var didDrag = false
+    /// Drag payload, encoded off-main right after the card appears — a
+    /// synchronous full-resolution PNG encode inside mouseDragged freezes the
+    /// app for seconds on large captures.
+    private var cachedPNG: Data?
 
     init(item: DeliveredCapture, thumbnail: NSImage?, video: QAOVideoMeta?) {
         self.item = item
@@ -208,6 +212,18 @@ private final class QAOCardView: NSView, NSDraggingSource {
         height = min(max(height, 70), 170)
         super.init(frame: NSRect(x: 0, y: 0, width: width, height: height))
         build(video: video)
+
+        if case .still(let still) = item.payload {
+            let downscale = Settings.shared.downscaleRetina
+            Task.detached(priority: .utility) { [weak self] in
+                let data = OutputRouter.encodePNG(
+                    image: still.image, dpiScale: still.scale, downscaleTo1x: downscale)
+                guard let data else { return }
+                await MainActor.run { [weak self] in
+                    self?.cachedPNG = data
+                }
+            }
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -352,12 +368,30 @@ private final class QAOCardView: NSView, NSDraggingSource {
             let type = (format == .png ? UTType.png : UTType.jpeg).identifier
             let name = item.fileURL?.lastPathComponent
                 ?? OutputRouter.shared.nextFileName(ext: format.fileExtension)
-            // Pre-encode on the main actor: the promise is fulfilled on a
-            // background queue where OutputRouter (@MainActor) can't be used.
-            let fileData = item.fileURL == nil ? OutputRouter.shared.encode(still, format: format) : nil
-            let pngData = (format == .png && fileData != nil)
-                ? fileData
-                : OutputRouter.shared.encode(still, format: .png)
+            // The promise is fulfilled on a background queue where OutputRouter
+            // (@MainActor) can't be used, so data must exist up front. Prefer
+            // the background-encoded cache; encode synchronously only when the
+            // drag can't proceed without it (no file on disk yet), and skip
+            // the raw-PNG extra on big images if the cache isn't ready — the
+            // file promise still covers Finder/Slack/browsers.
+            let fileData: Data?
+            if item.fileURL != nil {
+                fileData = nil
+            } else if format == .png, let cachedPNG {
+                fileData = cachedPNG
+            } else {
+                fileData = OutputRouter.shared.encode(still, format: format)
+            }
+            let pngData: Data?
+            if let cachedPNG {
+                pngData = cachedPNG
+            } else if format == .png, fileData != nil {
+                pngData = fileData
+            } else if still.image.width * still.image.height < 8_000_000 {
+                pngData = OutputRouter.shared.encode(still, format: .png)
+            } else {
+                pngData = nil
+            }
             let anchor = QAOPromiseDelegate(fileName: name, sourceURL: item.fileURL, fileData: fileData)
             provider = QAOImagePromiseProvider(fileType: type, delegate: anchor)
             provider.anchorDelegate = anchor
@@ -458,6 +492,7 @@ private final class QAOCardView: NSView, NSDraggingSource {
         guard let url = item.fileURL else { return }
         do {
             try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+            OutputRouter.shared.removeRecent(url)
             onDismiss?()
         } catch {
             NSLog("move to bin failed: \(error)")
