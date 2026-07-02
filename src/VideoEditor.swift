@@ -427,8 +427,11 @@ private final class VideoEditorView: NSView {
     }
 
     private func setBusy(_ busy: Bool) {
-        for control in [speedPopup, sizePopup, volumeSlider, gifButton, copyButton, saveButton] {
-            (control as? NSControl)?.isEnabled = !busy
+        let controls: [NSControl?] = [
+            speedPopup, sizePopup, volumeSlider, gifButton, copyButton, saveButton,
+        ]
+        for control in controls {
+            control?.isEnabled = !busy
         }
         timeline.isEnabled = !busy
         if busy { spinner.startAnimation(nil) } else { spinner.stopAnimation(nil) }
