@@ -75,7 +75,15 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
 
     private var toolButtons: [(tool: AnnotatorTool, button: NSButton)] = []
     private let optionsStack = NSStackView()
+    private var optionsBarHeight: NSLayoutConstraint!
+    private var undoButton: NSButton!
+    private var redoButton: NSButton!
+    private let zoomLabel = NSTextField(labelWithString: "100%")
     private let dimensionsLabel = NSTextField(labelWithString: "")
+    /// Each tool remembers its own colour/width, CleanShot-style — switching
+    /// from a red arrow to the highlighter must not paint red highlights.
+    private var toolColours: [AnnotatorTool: NSColor] = [:]
+    private var toolWidths: [AnnotatorTool: CGFloat] = [:]
     private let backdrop = AnnotatorBackdropView()
     private var backgroundButton: NSButton?
     private var backgroundBarActive = false
@@ -188,6 +196,16 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         scrollView.maxMagnification = 4
         scrollView.drawsBackground = true
         scrollView.backgroundColor = .underPageBackgroundColor
+        // Breathing room around the document — the image floating on the
+        // surround reads as "a thing being edited", not a filled window.
+        scrollView.automaticallyAdjustsContentInsets = false
+        scrollView.contentInsets = NSEdgeInsets(top: 24, left: 24, bottom: 24, right: 24)
+        NotificationCenter.default.addObserver(
+            forName: NSScrollView.didEndLiveMagnifyNotification,
+            object: scrollView, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshZoomLabel() }
+        }
 
         for v in [toolbar, optionsBar, scrollView, footer] {
             v.translatesAutoresizingMaskIntoConstraints = false
@@ -202,7 +220,6 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             optionsBar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             optionsBar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             optionsBar.topAnchor.constraint(equalTo: toolbar.bottomAnchor),
-            optionsBar.heightAnchor.constraint(equalToConstant: 34),
 
             scrollView.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: content.trailingAnchor),
@@ -261,7 +278,14 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         stack.insertArrangedSubview(background, at: 1)
         backgroundButton = background
 
-        // Primary actions live top-right: send, pin, copy, save.
+        // Undo/redo sit between the tools and the primary actions.
+        undoButton = toolbarIconButton(
+            symbol: "arrow.uturn.backward", tooltip: "Undo (⌘Z)", action: #selector(undoTapped))
+        redoButton = toolbarIconButton(
+            symbol: "arrow.uturn.forward", tooltip: "Redo (⇧⌘Z)", action: #selector(redoTapped))
+
+        // Primary actions live top-right: send, pin, copy, then a real Save
+        // button — the terminal action of the whole editor, not another glyph.
         let send = toolbarIconButton(
             symbol: "paperplane", tooltip: "Send to Sentry app",
             action: #selector(sendToTapped(_:)))
@@ -269,12 +293,17 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             symbol: "pin", tooltip: "Pin to Screen", action: #selector(pinTapped))
         let copy = toolbarIconButton(
             symbol: "doc.on.doc", tooltip: "Copy (⌘C)", action: #selector(copyTapped))
-        let save = toolbarIconButton(
-            symbol: "square.and.arrow.down", tooltip: "Save (⌘S)", action: #selector(saveTapped))
-        save.contentTintColor = .controlAccentColor
-        let actions = NSStackView(views: [send, pin, copy, save])
+        let save = NSButton(title: "Save", target: self, action: #selector(saveTapped))
+        save.bezelStyle = .rounded
+        save.controlSize = .small
+        save.font = .systemFont(ofSize: 12, weight: .medium)
+        save.bezelColor = .controlAccentColor
+        save.toolTip = "Save (⌘S)"
+        let actions = NSStackView(views: [undoButton, redoButton, send, pin, copy, save])
         actions.orientation = .horizontal
         actions.spacing = 2
+        actions.setCustomSpacing(12, after: redoButton)
+        actions.setCustomSpacing(8, after: copy)
         actions.translatesAutoresizingMaskIntoConstraints = false
 
         let separator = hairline()
@@ -325,7 +354,10 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         let separator = hairline()
         container.addSubview(optionsStack)
         container.addSubview(separator)
+        container.clipsToBounds = true   // collapsed bar must not bleed its separator
+        optionsBarHeight = container.heightAnchor.constraint(equalToConstant: 34)
         NSLayoutConstraint.activate([
+            optionsBarHeight,
             optionsStack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 10),
             optionsStack.centerYAnchor.constraint(equalTo: container.centerYAnchor),
             optionsStack.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -10),
@@ -343,6 +375,24 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         dimensionsLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         dimensionsLabel.textColor = .secondaryLabelColor
 
+        func zoomButton(_ title: String, _ selector: Selector, tip: String) -> NSButton {
+            let button = NSButton(title: title, target: self, action: selector)
+            button.controlSize = .small
+            button.bezelStyle = .accessoryBarAction
+            button.font = .systemFont(ofSize: 11)
+            button.toolTip = tip
+            return button
+        }
+        zoomLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        zoomLabel.textColor = .secondaryLabelColor
+        zoomLabel.alignment = .center
+        zoomLabel.translatesAutoresizingMaskIntoConstraints = false
+        zoomLabel.widthAnchor.constraint(equalToConstant: 40).isActive = true
+        let zoomOut = zoomButton("−", #selector(zoomOutTapped), tip: "Zoom out (⌘-)")
+        let zoomIn = zoomButton("+", #selector(zoomInTapped), tip: "Zoom in (⌘+)")
+        let zoomFit = zoomButton("Fit", #selector(zoomFitTapped), tip: "Fit in window")
+        let zoomActual = zoomButton("100%", #selector(zoomActualTapped), tip: "Actual size (⌘0)")
+
         let saveAs = NSButton(title: "Save As…", target: self, action: #selector(saveAsTapped))
         saveAs.controlSize = .small
         saveAs.bezelStyle = .accessoryBarAction
@@ -350,7 +400,10 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         let spacer = NSView()
         spacer.setContentHuggingPriority(.init(1), for: .horizontal)
 
-        let stack = NSStackView(views: [dimensionsLabel, spacer, saveAs])
+        let stack = NSStackView(views: [
+            dimensionsLabel, spacer, zoomOut, zoomLabel, zoomIn, zoomFit, zoomActual, saveAs,
+        ])
+        stack.setCustomSpacing(16, after: zoomActual)
         stack.orientation = .horizontal
         stack.spacing = 8
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -372,7 +425,8 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
 
     private func sizeWindowToImage() {
         let pt = canvas.pointSize
-        var size = NSSize(width: pt.width + 2, height: pt.height + 44 + 34 + 30 + 2)
+        // 48pt = the scroll view's content insets on both sides.
+        var size = NSSize(width: pt.width + 48 + 2, height: pt.height + 48 + 44 + 34 + 30 + 2)
         if let screen = NSScreen.main ?? NSScreen.screens.first {
             size.width = min(size.width, screen.visibleFrame.width * 0.8)
             size.height = min(size.height, screen.visibleFrame.height * 0.8)
@@ -399,6 +453,8 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             button.layer?.backgroundColor = selected ? NSColor.controlAccentColor.cgColor : nil
             button.contentTintColor = selected ? .white : .secondaryLabelColor
         }
+        undoButton.isEnabled = windowUndoManager.canUndo
+        redoButton.isEnabled = windowUndoManager.canRedo
         if let backgroundButton {
             let active = backgroundBarActive || backgroundStyle.isVisible
             backgroundButton.layer?.backgroundColor =
@@ -500,8 +556,15 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     // MARK: Options bar contents
 
     private func rebuildOptionsBar() {
+        // Rebuilding while the colour panel drives the well would orphan the
+        // panel's target mid-drag — leave the bar alone until it closes.
+        if NSColorPanel.sharedColorPanelExists, NSColorPanel.shared.isVisible { return }
         for view in optionsStack.arrangedSubviews {
             view.removeFromSuperview()
+        }
+        defer {
+            // No options for this tool → the bar cedes its strip to the canvas.
+            optionsBarHeight.constant = optionsStack.arrangedSubviews.isEmpty ? 0 : 34
         }
         if backgroundBarActive, !canvas.cropActive {
             rebuildBackgroundBar()
@@ -545,7 +608,9 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             break   // a spotlight has no styling — the veil is fixed
         case .some(.arrow):
             (showColour, showStroke, showArrowStyle) = (true, true, true)
-        case .some, .none:
+        case .some(.image), .none:
+            break   // select with nothing selected / a dropped image: no options
+        case .some:
             (showColour, showStroke) = (true, true)
         }
 
@@ -555,6 +620,16 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
                 optionsStack.addArrangedSubview(
                     swatch(entry.colour, name: entry.name, tag: i, selected: entry.colour == activeColour))
             }
+            // Any-colour well after the presets; its popover carries the eyedropper.
+            let well = NSColorWell(style: .minimal)
+            well.color = activeColour
+            well.target = self
+            well.action = #selector(colourWellChanged(_:))
+            well.toolTip = "Custom colour"
+            well.translatesAutoresizingMaskIntoConstraints = false
+            well.widthAnchor.constraint(equalToConstant: 34).isActive = true
+            well.heightAnchor.constraint(equalToConstant: 20).isActive = true
+            optionsStack.addArrangedSubview(well)
         }
         if showStroke {
             let control = NSSegmentedControl(
@@ -690,11 +765,15 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
 
     private func selectTool(_ tool: AnnotatorTool) {
         canvas.tool = tool
+        if let colour = toolColours[tool] { canvas.currentColour = colour }
+        if let width = toolWidths[tool] { canvas.currentLineWidth = width }
+        refreshChrome()
         window.makeFirstResponder(canvas)
     }
 
     @objc private func swatchTapped(_ sender: NSButton) {
         canvas.applyColour(Self.palette[sender.tag].colour)
+        toolColours[canvas.tool] = Self.palette[sender.tag].colour
         refreshChrome()
         // Refocusing the canvas mid-text-edit force-commits the editor the
         // moment a swatch is touched — leave focus with the editor.
@@ -703,9 +782,27 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         }
     }
 
+    @objc private func colourWellChanged(_ sender: NSColorWell) {
+        canvas.applyColour(sender.color)
+        toolColours[canvas.tool] = sender.color
+        // No refreshChrome: the guard above skips rebuilds while the panel is
+        // up, and rebuilding would disconnect the well mid-drag anyway.
+    }
+
     @objc private func strokeChanged(_ sender: NSSegmentedControl) {
         canvas.applyLineWidth(Self.strokeWidths[sender.selectedSegment])
+        toolWidths[canvas.tool] = Self.strokeWidths[sender.selectedSegment]
         window.makeFirstResponder(canvas)
+    }
+
+    @objc private func undoTapped() {
+        windowUndoManager.undo()
+        refreshChrome()
+    }
+
+    @objc private func redoTapped() {
+        windowUndoManager.redo()
+        refreshChrome()
     }
 
     @objc private func textSizeChanged(_ sender: NSSegmentedControl) {
@@ -907,6 +1004,22 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
 
     // MARK: Zoom
 
+    @objc private func zoomInTapped() { zoom(by: 1.25) }
+    @objc private func zoomOutTapped() { zoom(by: 0.8) }
+    @objc private func zoomActualTapped() { setZoom(1) }
+
+    @objc private func zoomFitTapped() {
+        let doc = backdrop.frame.size
+        guard doc.width > 0, doc.height > 0 else { return }
+        // Fit within the visible area minus the content insets' margin.
+        let visible = scrollView.contentView.bounds.size
+        let insets = scrollView.contentInsets
+        let fit = min(
+            (visible.width - insets.left - insets.right) / doc.width,
+            (visible.height - insets.top - insets.bottom) / doc.height)
+        setZoom(min(fit, 1))
+    }
+
     private func zoom(by factor: CGFloat) {
         setZoom(scrollView.magnification * factor)
     }
@@ -916,6 +1029,11 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         let visible = scrollView.contentView.bounds
         scrollView.setMagnification(
             clamped, centeredAt: NSPoint(x: visible.midX, y: visible.midY))
+        refreshZoomLabel()
+    }
+
+    private func refreshZoomLabel() {
+        zoomLabel.stringValue = "\(Int((scrollView.magnification * 100).rounded()))%"
     }
 }
 
