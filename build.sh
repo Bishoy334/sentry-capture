@@ -4,7 +4,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_NAME="Sentry Capture"
 BIN_NAME="SentryCapture"
-APP_DIR="$HOME/Applications/${APP_NAME}.app"
+APP_DIR="/Applications/${APP_NAME}.app"
 
 OPT="-O"
 RUN=false
@@ -33,9 +33,13 @@ cp "${SCRIPT_DIR}/${BIN_NAME}" "${APP_DIR}/Contents/MacOS/${BIN_NAME}"
 cp "${SCRIPT_DIR}/Info.plist" "${APP_DIR}/Contents/Info.plist"
 rm "${SCRIPT_DIR}/${BIN_NAME}"
 
-# TCC ties the Screen Recording grant to the code signature — prefer a stable
-# identity over ad-hoc when one exists so rebuilds keep the grant.
-IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Apple Development/{print $2; exit}')
+# TCC ties the Screen Recording grant to the code signature — ad-hoc signing
+# changes identity every rebuild and silently kills the grant. Prefer a real
+# Apple Development identity, then the self-signed "Sentry Capture Dev" cert.
+IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
+    | awk -F'"' '/Apple Development/{print $2; exit}')
+IDENTITY=${IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null \
+    | awk -F'"' '/Sentry Capture Dev/{print $2; exit}')}
 codesign --force --sign "${IDENTITY:--}" "${APP_DIR}"
 
 echo "Built: ${APP_DIR}"
