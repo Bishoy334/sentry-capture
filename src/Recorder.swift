@@ -888,7 +888,7 @@ private final class HUDActionView: NSView {
 private final class RecorderBorderView: NSView {
     static let strokeWidth: CGFloat = 2
 
-    var colour: NSColor = .controlAccentColor {
+    var colour: NSColor = HUDStyle.accent {
         didSet { needsDisplay = true }
     }
 
@@ -1049,7 +1049,7 @@ private final class RecorderControlStrip: NSPanel {
     }
 
     private func tint(_ button: NSButton) {
-        button.contentTintColor = button.state == .on ? .controlAccentColor : .tertiaryLabelColor
+        button.contentTintColor = button.state == .on ? HUDStyle.accent : .tertiaryLabelColor
     }
 
     private func hairline() -> NSView {

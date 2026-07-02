@@ -223,11 +223,11 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         }
         if case .marquee = drag, marqueeRect.width + marqueeRect.height > 2 {
             ctx.saveGState()
-            ctx.setStrokeColor(NSColor.controlAccentColor.cgColor)
+            ctx.setStrokeColor(HUDStyle.accent.cgColor)
             ctx.setLineWidth(1 / zoom)
             ctx.setLineDash(phase: 0, lengths: [4 / zoom, 3 / zoom])
             ctx.stroke(marqueeRect)
-            ctx.setFillColor(NSColor.controlAccentColor.withAlphaComponent(0.08).cgColor)
+            ctx.setFillColor(HUDStyle.accent.withAlphaComponent(0.08).cgColor)
             ctx.fill(marqueeRect)
             ctx.restoreGState()
         }
@@ -238,7 +238,7 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
 
     private func drawSelectionOutline(_ a: AnnotatorAnnotation, in ctx: CGContext) {
         ctx.saveGState()
-        ctx.setStrokeColor(NSColor.controlAccentColor.withAlphaComponent(0.7).cgColor)
+        ctx.setStrokeColor(HUDStyle.accent.withAlphaComponent(0.7).cgColor)
         ctx.setLineWidth(1 / zoom)
         ctx.setLineDash(phase: 0, lengths: [3 / zoom, 2 / zoom])
         ctx.stroke(AnnotatorGeo.bounds(of: a).insetBy(dx: -3, dy: -3))
@@ -344,7 +344,7 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
 
     private func drawChrome(_ a: AnnotatorAnnotation, in ctx: CGContext) {
         let z = zoom
-        let accent = NSColor.controlAccentColor
+        let accent = HUDStyle.accent
         ctx.saveGState()
         defer { ctx.restoreGState() }
         let handles = AnnotatorHit.handles(for: a)

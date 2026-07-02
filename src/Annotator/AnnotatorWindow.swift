@@ -466,7 +466,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     private func refreshChrome() {
         for (tool, button) in toolButtons {
             let selected = tool == canvas.tool
-            button.layer?.backgroundColor = selected ? NSColor.controlAccentColor.cgColor : nil
+            button.layer?.backgroundColor = selected ? HUDStyle.accentDeep.cgColor : nil
             button.contentTintColor = selected ? .white : .secondaryLabelColor
         }
         undoButton.isEnabled = windowUndoManager.canUndo
@@ -474,10 +474,10 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         if let backgroundButton {
             let active = backgroundBarActive || backgroundStyle.isVisible
             backgroundButton.layer?.backgroundColor =
-                backgroundBarActive ? NSColor.controlAccentColor.cgColor : nil
+                backgroundBarActive ? HUDStyle.accentDeep.cgColor : nil
             backgroundButton.contentTintColor = backgroundBarActive
                 ? .white
-                : (active ? .controlAccentColor : .secondaryLabelColor)
+                : (active ? HUDStyle.accent : .secondaryLabelColor)
         }
         rebuildOptionsBar()
     }
@@ -525,9 +525,13 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         }
 
         func eyebrow(_ text: String) -> NSTextField {
-            let label = NSTextField(labelWithString: text)
-            label.font = .systemFont(ofSize: 10, weight: .semibold)
-            label.textColor = .tertiaryLabelColor
+            // Tracked-uppercase eyebrow, per the Sentry brand's section heads.
+            let label = NSTextField(labelWithString: "")
+            label.attributedStringValue = NSAttributedString(string: text, attributes: [
+                .font: NSFont.systemFont(ofSize: 10, weight: .semibold),
+                .foregroundColor: NSColor.tertiaryLabelColor,
+                .kern: 0.8,
+            ])
             return label
         }
 
@@ -761,7 +765,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         button.layer?.cornerRadius = 8
         button.layer?.borderWidth = selected ? 2 : 1
         button.layer?.borderColor = selected
-            ? NSColor.controlAccentColor.cgColor
+            ? HUDStyle.accent.cgColor
             : NSColor.separatorColor.cgColor
         button.tag = tag
         button.target = self

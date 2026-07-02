@@ -625,7 +625,7 @@ private final class VideoTimelineView: NSView {
         let selected = NSRect(
             x: x(for: startFraction), y: strip.minY,
             width: x(for: endFraction) - x(for: startFraction), height: strip.height)
-        NSColor.controlAccentColor.setFill()
+        HUDStyle.accent.setFill()
         NSRect(x: selected.minX, y: selected.minY - 2, width: selected.width, height: 2).fill()
         NSRect(x: selected.minX, y: selected.maxY, width: selected.width, height: 2).fill()
         for (fraction, leading) in [(startFraction, true), (endFraction, false)] {
@@ -634,7 +634,7 @@ private final class VideoTimelineView: NSView {
                 x: leading ? hx - Self.handleWidth : hx,
                 y: strip.minY - 2, width: Self.handleWidth, height: strip.height + 4)
             let path = NSBezierPath(roundedRect: handle, xRadius: 3, yRadius: 3)
-            NSColor.controlAccentColor.setFill()
+            HUDStyle.accent.setFill()
             path.fill()
             NSColor.white.setFill()
             NSRect(x: handle.midX - 0.75, y: handle.midY - 7, width: 1.5, height: 14).fill()

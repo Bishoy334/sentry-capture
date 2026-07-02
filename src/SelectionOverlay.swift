@@ -793,7 +793,7 @@ private final class SelectionOverlayView: NSView {
         if let selection {
             let border = NSBezierPath(rect: selection)
             border.lineWidth = 1.5
-            NSColor.controlAccentColor.setStroke()
+            HUDStyle.accent.setStroke()
             border.stroke()
             drawSizeLabel(for: selection)
             if !controller.isDragging, controller.heldRect != nil {
@@ -805,11 +805,11 @@ private final class SelectionOverlayView: NSView {
         if let hover = controller.hoverWindow {
             let rect = viewRect(fromCG: hover.frame)
             if rect.intersects(bounds) {
-                NSColor.controlAccentColor.withAlphaComponent(0.08).setFill()
+                HUDStyle.accent.withAlphaComponent(0.08).setFill()
                 NSBezierPath(rect: rect).fill()
                 let stroke = NSBezierPath(rect: rect.insetBy(dx: 1, dy: 1))
                 stroke.lineWidth = 2
-                NSColor.controlAccentColor.setStroke()
+                HUDStyle.accent.setStroke()
                 stroke.stroke()
             }
         }
@@ -866,7 +866,7 @@ private final class SelectionOverlayView: NSView {
             x: rect.midX - magnification / scale / 2,
             y: rect.midY - magnification / scale / 2,
             width: magnification / scale * 2, height: magnification / scale * 2)
-        NSColor.controlAccentColor.setStroke()
+        HUDStyle.accent.setStroke()
         NSBezierPath(rect: tick).stroke()
 
         let coords = String(
@@ -890,7 +890,7 @@ private final class SelectionOverlayView: NSView {
             NSBezierPath(rect: rect).fill()
             let stroke = NSBezierPath(rect: rect)
             stroke.lineWidth = 1
-            NSColor.controlAccentColor.setStroke()
+            HUDStyle.accent.setStroke()
             stroke.stroke()
         }
     }
@@ -1185,7 +1185,7 @@ private final class AllInOneStrip: NSPanel, NSTextFieldDelegate {
             button.alphaValue = available ? 1 : 0.35
         }
         // Capture is the strip's default action (Return) — read as primary.
-        captureButton?.contentTintColor = available ? .controlAccentColor : .white
+        captureButton?.contentTintColor = available ? HUDStyle.accent : .white
     }
 
     @objc private func buttonTapped(_ sender: NSButton) {
@@ -1201,7 +1201,7 @@ private final class AllInOneStrip: NSPanel, NSTextFieldDelegate {
         let index = (cycle.firstIndex(of: timerSeconds) ?? 0) + 1
         timerSeconds = cycle[index % cycle.count]
         timerButton.title = timerSeconds == 0 ? "Timer" : "\(timerSeconds)s"
-        timerButton.contentTintColor = timerSeconds == 0 ? .white : .controlAccentColor
+        timerButton.contentTintColor = timerSeconds == 0 ? .white : HUDStyle.accent
     }
 
     // Key-capable for the size fields; becomesKeyOnlyIfNeeded means only a

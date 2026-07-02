@@ -8,6 +8,17 @@ enum HUDStyle {
     static let cornerRadius: CGFloat = 12
     static let borderColour = NSColor.white.withAlphaComponent(0.12)
 
+    /// The Sentry accent (brand/tokens.css): one warm amber does "live /
+    /// selected / now" across our custom-drawn chrome. Native controls
+    /// (buttons, checkboxes) keep the system accent — brand rides the custom
+    /// surfaces, not the AppKit ones.
+    static let accent = NSColor(
+        srgbRed: 0xE8 / 255, green: 0xA9 / 255, blue: 0x6A / 255, alpha: 1)   // --accent-bright
+    static let accentDeep = NSColor(
+        srgbRed: 0x8A / 255, green: 0x5A / 255, blue: 0x2A / 255, alpha: 1)   // --accent (fills)
+    static let accentSoft = NSColor(
+        srgbRed: 0xE8 / 255, green: 0xA9 / 255, blue: 0x6A / 255, alpha: 0.14)
+
     static func card(appearance: NSAppearance.Name? = nil) -> NSVisualEffectView {
         let card = NSVisualEffectView()
         card.material = .hudWindow

@@ -204,7 +204,7 @@ private final class PinContentView: NSView {
             closeButton.animator().alphaValue = hovering ? 1 : 0
         }
         layer?.borderWidth = hovering ? 1 : 0
-        layer?.borderColor = NSColor.controlAccentColor.withAlphaComponent(0.7).cgColor
+        layer?.borderColor = HUDStyle.accent.withAlphaComponent(0.7).cgColor
     }
 
     // MARK: Scroll = opacity
