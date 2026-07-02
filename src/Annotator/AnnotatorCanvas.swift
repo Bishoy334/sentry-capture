@@ -47,6 +47,8 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
     var currentLineWidth: CGFloat = 4
     var currentTextSize: CGFloat = 20
     var currentRedactStyle: AnnotatorRedactStyle = .pixelate
+    var currentArrowStyle: AnnotatorArrowStyle = .straight
+    var currentTextStyle: AnnotatorTextStyle = .standard
 
     /// Tool / selection / text-editing changed — chrome should refresh.
     var onStateChange: (() -> Void)?
@@ -142,7 +144,12 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
             guard AnnotatorGeo.displayBounds(of: a).intersects(dirtyRect) else { continue }
             AnnotatorRender.draw(a, in: ctx, canvasHeight: h, redactPatch: cachedPatch(for: a))
         }
-        for a in annotations where a.kind != .redact {
+        // Spotlights dim above redactions and below everything else. The
+        // veil spans the whole canvas, so it redraws whenever any spotlight
+        // exists and the dirty rect intersects anything.
+        let spotlights = annotations.filter { $0.kind == .spotlight }.map(\.rect)
+        AnnotatorRender.drawSpotlightDim(spotlights: spotlights, canvasSize: pointSize, in: ctx)
+        for a in annotations where a.kind != .redact && a.kind != .spotlight {
             guard a.id != editingTextID,
                   AnnotatorGeo.displayBounds(of: a).intersects(dirtyRect) else { continue }
             AnnotatorRender.draw(a, in: ctx, canvasHeight: h, redactPatch: nil)
@@ -354,15 +361,17 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
             var a = AnnotatorAnnotation(kind: tool == .arrow ? .arrow : .line)
             a.colour = currentColour
             a.lineWidth = currentLineWidth
+            a.arrowStyle = currentArrowStyle
             a.start = p
             a.end = p
             annotations.append(a)
             drag = .drawLine(id: a.id)
-        case .rect, .filledRect, .ellipse, .redact:
+        case .rect, .filledRect, .ellipse, .redact, .spotlight:
             let kind: AnnotatorKind = switch tool {
             case .rect: .rect
             case .filledRect: .filledRect
             case .ellipse: .ellipse
+            case .spotlight: .spotlight
             default: .redact
             }
             var a = AnnotatorAnnotation(kind: kind)
@@ -471,11 +480,22 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
                 setSelected(id)
             }
         case .freehand(let id):
-            if let i = index(of: id), annotations[i].points.count < 2 {
-                // A zero-length round-cap stroke renders nothing — make a dot.
-                let p = annotations[i].points[0]
-                annotations[i].points.append(CGPoint(x: p.x + 0.1, y: p.y))
-                setNeedsDisplay(AnnotatorGeo.displayBounds(of: annotations[i]))
+            if let i = index(of: id) {
+                let before = AnnotatorGeo.displayBounds(of: annotations[i])
+                if annotations[i].points.count < 2 {
+                    // A zero-length round-cap stroke renders nothing — make a dot.
+                    let p = annotations[i].points[0]
+                    annotations[i].points.append(CGPoint(x: p.x + 0.1, y: p.y))
+                } else {
+                    annotations[i].points = AnnotatorGeo.smoothed(annotations[i].points)
+                    // Highlighter runs that read as "underlining a line of
+                    // text" snap to a clean horizontal band.
+                    if annotations[i].kind == .highlighter,
+                       let band = AnnotatorGeo.horizontalBand(annotations[i].points) {
+                        annotations[i].points = band
+                    }
+                }
+                setNeedsDisplay(before.union(AnnotatorGeo.displayBounds(of: annotations[i])))
             }
         case .cropNew:
             if cropRect.width < 10 || cropRect.height < 10 {
@@ -590,7 +610,11 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         guard let i = index(of: id) else { return }
         let before = AnnotatorGeo.displayBounds(of: annotations[i])
         mutate(&annotations[i])
-        setNeedsDisplay(before.union(AnnotatorGeo.displayBounds(of: annotations[i])))
+        if annotations[i].kind == .spotlight {
+            needsDisplay = true   // the veil covers the whole canvas
+        } else {
+            setNeedsDisplay(before.union(AnnotatorGeo.displayBounds(of: annotations[i])))
+        }
     }
 
     private func removeAnnotation(_ id: UUID) {
@@ -700,7 +724,8 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         update(id) {
             $0.colour = colour
             if $0.kind == .text, let t = $0.text {
-                $0.text = AnnotatorRender.attributed(t.string, size: $0.textSize, colour: colour)
+                $0.text = AnnotatorRender.attributed(
+                    t.string, size: $0.textSize, colour: colour, style: $0.textStyle)
             }
         }
         registerUndoIfChanged(pre, name: "Colour")
@@ -719,7 +744,10 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
     func applyTextSize(_ size: CGFloat) {
         currentTextSize = size
         if let tv = textEditor {
-            tv.font = NSFont.systemFont(ofSize: size, weight: .semibold)
+            let style = editingTextID.flatMap { id in
+                index(of: id).map { annotations[$0].textStyle }
+            } ?? currentTextStyle
+            tv.font = style.font(size: size)
             if let id = editingTextID, let i = index(of: id) {
                 annotations[i].textSize = size
             }
@@ -731,7 +759,8 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         update(id) {
             $0.textSize = size
             if let t = $0.text {
-                $0.text = AnnotatorRender.attributed(t.string, size: size, colour: $0.colour)
+                $0.text = AnnotatorRender.attributed(
+                    t.string, size: size, colour: $0.colour, style: $0.textStyle)
             }
         }
         registerUndoIfChanged(pre, name: "Text Size")
@@ -743,6 +772,39 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         let pre = snapshot()
         update(id) { $0.redactStyle = style }
         registerUndoIfChanged(pre, name: "Redact Style")
+    }
+
+    func applyArrowStyle(_ style: AnnotatorArrowStyle) {
+        currentArrowStyle = style
+        guard let id = selectedID, let a = annotation(id), a.kind == .arrow else { return }
+        let pre = snapshot()
+        update(id) { $0.arrowStyle = style }
+        registerUndoIfChanged(pre, name: "Arrow Style")
+    }
+
+    func applyTextStyle(_ style: AnnotatorTextStyle) {
+        currentTextStyle = style
+        if let tv = textEditor {
+            let size = editingTextID.flatMap { id in
+                index(of: id).map { annotations[$0].textSize }
+            } ?? currentTextSize
+            tv.font = style.font(size: size)
+            if let id = editingTextID, let i = index(of: id) {
+                annotations[i].textStyle = style
+            }
+            growTextEditor()
+            return
+        }
+        guard let id = selectedID, let a = annotation(id), a.kind == .text else { return }
+        let pre = snapshot()
+        update(id) {
+            $0.textStyle = style
+            if let t = $0.text {
+                $0.text = AnnotatorRender.attributed(
+                    t.string, size: $0.textSize, colour: $0.colour, style: style)
+            }
+        }
+        registerUndoIfChanged(pre, name: "Text Style")
     }
 
     // MARK: Tool changes
@@ -834,13 +896,16 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
             frame = CGRect(x: point.x, y: point.y - size * 0.7, width: 20, height: size * 1.5)
         }
 
+        let editorStyle = id.flatMap { id in
+            index(of: id).map { annotations[$0].textStyle }
+        } ?? currentTextStyle
         let tv = NSTextView(frame: frame)
         tv.drawsBackground = false
         tv.textContainerInset = .zero
         tv.textContainer?.lineFragmentPadding = 0   // match NSStringDrawing output (research B2)
         tv.isRichText = false
         tv.allowsUndo = true
-        tv.font = NSFont.systemFont(ofSize: size, weight: .semibold)
+        tv.font = editorStyle.font(size: size)
         tv.textColor = colour
         tv.insertionPointColor = colour
         tv.delegate = self
@@ -905,7 +970,8 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
             if let id = editingTextID { removeAnnotation(id) }
         } else if let id = editingTextID, let i = index(of: id) {
             let a = annotations[i]
-            annotations[i].text = AnnotatorRender.attributed(string, size: a.textSize, colour: a.colour)
+            annotations[i].text = AnnotatorRender.attributed(
+                string, size: a.textSize, colour: a.colour, style: a.textStyle)
             annotations[i].rect = frame
             setNeedsDisplay(AnnotatorGeo.displayBounds(of: annotations[i]))
         } else {
@@ -913,7 +979,9 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
             a.rect = frame
             a.colour = currentColour
             a.textSize = currentTextSize
-            a.text = AnnotatorRender.attributed(string, size: currentTextSize, colour: currentColour)
+            a.textStyle = currentTextStyle
+            a.text = AnnotatorRender.attributed(
+                string, size: currentTextSize, colour: currentColour, style: currentTextStyle)
             annotations.append(a)
             setSelected(a.id)
             setNeedsDisplay(AnnotatorGeo.displayBounds(of: a))

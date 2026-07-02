@@ -66,7 +66,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     private static let toolbarGroups: [[AnnotatorTool]] = [
         [.crop],
         [.arrow, .line, .rect, .filledRect, .ellipse],
-        [.highlighter, .redact, .counter],
+        [.highlighter, .redact, .spotlight, .counter],
         [.draw, .text],
         [.select],
     ]
@@ -375,21 +375,25 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
 
         // Options follow the selection when there is one, else the armed tool.
         let kind = canvas.selectedAnnotation?.kind ?? impliedKind(for: canvas.tool)
-        let showColour: Bool
-        let showStroke: Bool
-        let showTextSize: Bool
-        let showRedact: Bool
+        var showColour = false
+        var showStroke = false
+        var showTextSize = false
+        var showTextStyle = false
+        var showRedact = false
+        var showArrowStyle = false
         switch kind {
         case .some(.highlighter), .some(.counter):
-            (showColour, showStroke, showTextSize, showRedact) = (true, false, false, false)
+            showColour = true
         case .some(.text):
-            (showColour, showStroke, showTextSize, showRedact) = (true, false, true, false)
+            (showColour, showTextSize, showTextStyle) = (true, true, true)
         case .some(.redact):
-            (showColour, showStroke, showTextSize, showRedact) = (false, false, false, true)
-        case .some:
-            (showColour, showStroke, showTextSize, showRedact) = (true, true, false, false)
-        case .none:
-            (showColour, showStroke, showTextSize, showRedact) = (true, true, false, false)
+            showRedact = true
+        case .some(.spotlight):
+            break   // a spotlight has no styling — the veil is fixed
+        case .some(.arrow):
+            (showColour, showStroke, showArrowStyle) = (true, true, true)
+        case .some, .none:
+            (showColour, showStroke) = (true, true)
         }
 
         let activeColour = canvas.selectedAnnotation?.colour ?? canvas.currentColour
@@ -417,9 +421,31 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             control.selectedSegment = Self.textSizes.firstIndex { $0.size == active } ?? 1
             optionsStack.addArrangedSubview(control)
         }
+        if showTextStyle {
+            let popup = NSPopUpButton()
+            popup.controlSize = .small
+            popup.font = .systemFont(ofSize: 11)
+            for style in AnnotatorTextStyle.allCases {
+                popup.addItem(withTitle: style.label)
+            }
+            let active = canvas.selectedAnnotation?.textStyle ?? canvas.currentTextStyle
+            popup.selectItem(at: active.rawValue)
+            popup.target = self
+            popup.action = #selector(textStyleChanged(_:))
+            optionsStack.addArrangedSubview(popup)
+        }
+        if showArrowStyle {
+            let control = NSSegmentedControl(
+                labels: AnnotatorArrowStyle.allCases.map(\.label),
+                trackingMode: .selectOne, target: self, action: #selector(arrowStyleChanged(_:)))
+            control.controlSize = .small
+            let active = canvas.selectedAnnotation?.arrowStyle ?? canvas.currentArrowStyle
+            control.selectedSegment = active.rawValue
+            optionsStack.addArrangedSubview(control)
+        }
         if showRedact {
             let control = NSSegmentedControl(
-                labels: ["Pixelate", "Blur", "Black"],
+                labels: ["Pixelate", "Blur", "Secure", "Black"],
                 trackingMode: .selectOne, target: self, action: #selector(redactStyleChanged(_:)))
             control.controlSize = .small
             let active = canvas.selectedAnnotation?.redactStyle ?? canvas.currentRedactStyle
@@ -441,6 +467,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         case .text: return .text
         case .counter: return .counter
         case .redact: return .redact
+        case .spotlight: return .spotlight
         }
     }
 
@@ -510,6 +537,22 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             canvas.applyRedactStyle(style)
         }
         window.makeFirstResponder(canvas)
+    }
+
+    @objc private func arrowStyleChanged(_ sender: NSSegmentedControl) {
+        if let style = AnnotatorArrowStyle(rawValue: sender.selectedSegment) {
+            canvas.applyArrowStyle(style)
+        }
+        window.makeFirstResponder(canvas)
+    }
+
+    @objc private func textStyleChanged(_ sender: NSPopUpButton) {
+        if let style = AnnotatorTextStyle(rawValue: sender.indexOfSelectedItem) {
+            canvas.applyTextStyle(style)
+        }
+        if !canvas.isEditingText {
+            window.makeFirstResponder(canvas)
+        }
     }
 
     @objc private func cropAspectChanged(_ sender: NSSegmentedControl) {

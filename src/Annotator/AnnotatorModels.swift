@@ -5,7 +5,7 @@ import CoreImage.CIFilterBuiltins
 // MARK: - Tools
 
 enum AnnotatorTool: CaseIterable {
-    case select, crop, arrow, line, rect, filledRect, ellipse, draw, highlighter, text, counter, redact
+    case select, crop, arrow, line, rect, filledRect, ellipse, draw, highlighter, text, counter, redact, spotlight
 
     var key: String {
         switch self {
@@ -21,6 +21,7 @@ enum AnnotatorTool: CaseIterable {
         case .text: return "t"
         case .counter: return "c"
         case .redact: return "p"
+        case .spotlight: return "h"
         }
     }
 
@@ -38,6 +39,7 @@ enum AnnotatorTool: CaseIterable {
         case .text: return "textformat"
         case .counter: return "number.circle"
         case .redact: return "checkerboard.rectangle"
+        case .spotlight: return "rays"
         }
     }
 
@@ -55,16 +57,66 @@ enum AnnotatorTool: CaseIterable {
         case .text: return "Text"
         case .counter: return "Counter"
         case .redact: return "Redact"
+        case .spotlight: return "Spotlight"
         }
     }
 }
 
-enum AnnotatorRedactStyle: Int, Equatable {
-    case pixelate, blur, blackout
+enum AnnotatorRedactStyle: Int, Equatable, Codable {
+    case pixelate, blur, secure, blackout
+}
+
+enum AnnotatorArrowStyle: Int, Equatable, Codable, CaseIterable {
+    case straight, curved, double, dashed
+
+    var label: String {
+        switch self {
+        case .straight: return "Straight"
+        case .curved: return "Curved"
+        case .double: return "Double"
+        case .dashed: return "Dashed"
+        }
+    }
+}
+
+enum AnnotatorTextStyle: Int, Equatable, Codable, CaseIterable {
+    case standard, rounded, mono, outlined, boxed, roundBoxed, monoBoxed
+
+    var label: String {
+        switch self {
+        case .standard: return "Standard"
+        case .rounded: return "Rounded"
+        case .mono: return "Monospaced"
+        case .outlined: return "Outlined"
+        case .boxed: return "Boxed"
+        case .roundBoxed: return "Round Boxed"
+        case .monoBoxed: return "Mono Boxed"
+        }
+    }
+
+    var isBoxed: Bool {
+        self == .boxed || self == .roundBoxed || self == .monoBoxed
+    }
+
+    func font(size: CGFloat) -> NSFont {
+        switch self {
+        case .mono, .monoBoxed:
+            return .monospacedSystemFont(ofSize: size, weight: .semibold)
+        case .rounded:
+            let base = NSFont.systemFont(ofSize: size, weight: .semibold)
+            if let descriptor = base.fontDescriptor.withDesign(.rounded),
+               let rounded = NSFont(descriptor: descriptor, size: size) {
+                return rounded
+            }
+            return base
+        default:
+            return .systemFont(ofSize: size, weight: .semibold)
+        }
+    }
 }
 
 enum AnnotatorKind: Equatable {
-    case arrow, line, rect, filledRect, ellipse, freehand, highlighter, text, counter, redact
+    case arrow, line, rect, filledRect, ellipse, freehand, highlighter, text, counter, redact, spotlight
 }
 
 /// One annotation, in IMAGE POINT coordinates (top-left origin). Which fields
@@ -73,7 +125,7 @@ enum AnnotatorKind: Equatable {
 struct AnnotatorAnnotation: Identifiable, Equatable {
     var id = UUID()
     var kind: AnnotatorKind
-    var rect: CGRect = .zero            // rect-like kinds + text + counter
+    var rect: CGRect = .zero            // rect-like kinds + text + counter + spotlight
     var start: CGPoint = .zero          // line / arrow endpoints
     var end: CGPoint = .zero
     var points: [CGPoint] = []          // freehand / highlighter
@@ -81,8 +133,10 @@ struct AnnotatorAnnotation: Identifiable, Equatable {
     var lineWidth: CGFloat = 4
     var text: NSAttributedString?
     var textSize: CGFloat = 20
+    var textStyle: AnnotatorTextStyle = .standard
     var number: Int = 0                 // counter badge
     var redactStyle: AnnotatorRedactStyle = .pixelate
+    var arrowStyle: AnnotatorArrowStyle = .straight
 }
 
 // MARK: - Geometry
@@ -115,6 +169,37 @@ enum AnnotatorGeo {
     static func displayBounds(of a: AnnotatorAnnotation) -> CGRect {
         let slop = a.lineWidth * 4 + 40
         return bounds(of: a).insetBy(dx: -slop, dy: -slop)
+    }
+
+    /// Decimate near-duplicate samples, then a light moving average —
+    /// enough to iron out mouse jitter without rounding intentional corners.
+    static func smoothed(_ points: [CGPoint]) -> [CGPoint] {
+        guard points.count > 4 else { return points }
+        var out: [CGPoint] = [points[0]]
+        for p in points.dropFirst() where hypot(p.x - out[out.count - 1].x, p.y - out[out.count - 1].y) >= 2 {
+            out.append(p)
+        }
+        if let last = points.last, out.last != last { out.append(last) }
+        guard out.count > 4 else { return out }
+        var smooth = out
+        for i in 1..<(out.count - 1) {
+            smooth[i] = CGPoint(
+                x: (out[i - 1].x + out[i].x + out[i + 1].x) / 3,
+                y: (out[i - 1].y + out[i].y + out[i + 1].y) / 3)
+        }
+        return smooth
+    }
+
+    /// A mostly-flat stroke wide enough to be underlining text collapses to a
+    /// straight band at the stroke's mean height; nil = keep as drawn.
+    static func horizontalBand(_ points: [CGPoint]) -> [CGPoint]? {
+        guard let first = points.first, let last = points.last, points.count > 2 else { return nil }
+        let ys = points.map(\.y)
+        guard let minY = ys.min(), let maxY = ys.max() else { return nil }
+        let width = abs(last.x - first.x)
+        guard width > 24, (maxY - minY) < max(14, width * 0.15) else { return nil }
+        let mean = ys.reduce(0, +) / CGFloat(ys.count)
+        return [CGPoint(x: first.x, y: mean), CGPoint(x: last.x, y: mean)]
     }
 
     static func translate(_ a: AnnotatorAnnotation, by d: CGPoint) -> AnnotatorAnnotation {
@@ -191,7 +276,7 @@ enum AnnotatorHit {
         case .highlighter:
             guard let path = AnnotatorPaths.outline(a) else { return false }
             return fatContains(path, width: AnnotatorRender.highlighterWidth, point: p)
-        case .filledRect, .redact:
+        case .filledRect, .redact, .spotlight:
             return a.rect.insetBy(dx: -4, dy: -4).contains(p)
         case .text:
             return a.rect.insetBy(dx: -6, dy: -6).contains(p)
@@ -218,7 +303,7 @@ enum AnnotatorHit {
         switch a.kind {
         case .line, .arrow:
             return [(.lineStart, a.start), (.lineEnd, a.end)]
-        case .rect, .filledRect, .ellipse, .redact, .text:
+        case .rect, .filledRect, .ellipse, .redact, .text, .spotlight:
             return rectHandles(a.rect)
         case .freehand, .highlighter, .counter:
             return []   // move-only
@@ -259,12 +344,40 @@ enum AnnotatorRender {
     static let highlighterWidth: CGFloat = 18
     static let counterDiameter: CGFloat = 24
 
-    static func textAttributes(size: CGFloat, colour: NSColor) -> [NSAttributedString.Key: Any] {
-        [.font: NSFont.systemFont(ofSize: size, weight: .semibold), .foregroundColor: colour]
+    static func textAttributes(
+        size: CGFloat, colour: NSColor, style: AnnotatorTextStyle = .standard
+    ) -> [NSAttributedString.Key: Any] {
+        var attributes: [NSAttributedString.Key: Any] = [
+            .font: style.font(size: size),
+        ]
+        switch style {
+        case .outlined:
+            // Negative stroke width = stroke AND fill; the contrasting outline
+            // keeps text legible on any background.
+            attributes[.foregroundColor] = colour
+            attributes[.strokeColor] = contrastColour(on: colour)
+            attributes[.strokeWidth] = -3.5
+        case .boxed, .roundBoxed, .monoBoxed:
+            // The box carries the colour; the glyphs contrast against it.
+            attributes[.foregroundColor] = contrastColour(on: colour)
+        default:
+            attributes[.foregroundColor] = colour
+        }
+        return attributes
     }
 
-    static func attributed(_ string: String, size: CGFloat, colour: NSColor) -> NSAttributedString {
-        NSAttributedString(string: string, attributes: textAttributes(size: size, colour: colour))
+    static func attributed(
+        _ string: String, size: CGFloat, colour: NSColor, style: AnnotatorTextStyle = .standard
+    ) -> NSAttributedString {
+        NSAttributedString(
+            string: string,
+            attributes: textAttributes(size: size, colour: colour, style: style))
+    }
+
+    static func contrastColour(on colour: NSColor) -> NSColor {
+        let c = colour.usingColorSpace(.sRGB) ?? colour
+        let luminance = 0.299 * c.redComponent + 0.587 * c.greenComponent + 0.114 * c.blueComponent
+        return luminance > 0.7 ? .black : .white
     }
 
     /// Blit a CGImage into a flipped (top-left origin) context without it
@@ -326,13 +439,23 @@ enum AnnotatorRender {
             ctx.addPath(AnnotatorPaths.freehand(a.points))
             ctx.strokePath()
         case .text:
+            if a.textStyle.isBoxed {
+                let radius: CGFloat = a.textStyle == .roundBoxed
+                    ? min(a.rect.height / 2 + 3, 14)
+                    : 4
+                let box = a.rect.insetBy(dx: -7, dy: -4)
+                ctx.setFillColor(a.colour.cgColor)
+                ctx.addPath(CGPath(
+                    roundedRect: box, cornerWidth: radius, cornerHeight: radius, transform: nil))
+                ctx.fillPath()
+            }
             a.text?.draw(in: a.rect)
         case .counter:
             ctx.setFillColor(a.colour.cgColor)
             ctx.fillEllipse(in: a.rect)
             let label = NSAttributedString(string: "\(a.number)", attributes: [
                 .font: NSFont.systemFont(ofSize: 13, weight: .bold),
-                .foregroundColor: counterTextColour(on: a.colour),
+                .foregroundColor: contrastColour(on: a.colour),
             ])
             let size = label.size()
             label.draw(at: CGPoint(x: a.rect.midX - size.width / 2, y: a.rect.midY - size.height / 2))
@@ -341,7 +464,7 @@ enum AnnotatorRender {
             case .blackout:
                 ctx.setFillColor(NSColor.black.cgColor)
                 ctx.fill(a.rect)
-            case .pixelate, .blur:
+            case .pixelate, .blur, .secure:
                 if let patch = redactPatch {
                     blitFlipped(patch.image, in: patch.rect, ctx: ctx, canvasHeight: canvasHeight)
                 } else {
@@ -351,7 +474,27 @@ enum AnnotatorRender {
                     ctx.fill(a.rect)
                 }
             }
+        case .spotlight:
+            // Rendered as a shared dim layer (drawSpotlightDim) so multiple
+            // spotlights punch holes in ONE veil — nothing to draw per item.
+            break
         }
+    }
+
+    /// One 45% veil with a hole per spotlight. Runs after redactions and
+    /// before every other annotation, so arrows/text stay bright.
+    static func drawSpotlightDim(
+        spotlights: [CGRect], canvasSize: CGSize, in ctx: CGContext
+    ) {
+        guard !spotlights.isEmpty else { return }
+        ctx.saveGState()
+        ctx.setFillColor(NSColor.black.withAlphaComponent(0.45).cgColor)
+        ctx.addRect(CGRect(origin: .zero, size: canvasSize))
+        for rect in spotlights {
+            ctx.addRect(rect)
+        }
+        ctx.fillPath(using: .evenOdd)
+        ctx.restoreGState()
     }
 
     private static func drawArrow(_ a: AnnotatorAnnotation, in ctx: CGContext) {
@@ -359,30 +502,68 @@ enum AnnotatorRender {
         let dy = a.end.y - a.start.y
         let len = hypot(dx, dy)
         guard len > 0.5 else { return }
-        let ux = dx / len, uy = dy / len
-        let headLength = min(max(a.lineWidth * 4, 10), len)
-        let headWidth = headLength * 0.85
-        let base = CGPoint(x: a.end.x - ux * headLength, y: a.end.y - uy * headLength)
+        let headLength = min(max(a.lineWidth * 4, 10), len / (a.arrowStyle == .double ? 2.5 : 1))
+
         ctx.setStrokeColor(a.colour.cgColor)
+        ctx.setFillColor(a.colour.cgColor)
         ctx.setLineWidth(a.lineWidth)
         ctx.setLineCap(.round)
-        // Stop the shaft short of the tip so the round cap doesn't poke past the head.
-        let shaftEnd = CGPoint(x: a.end.x - ux * headLength * 0.6, y: a.end.y - uy * headLength * 0.6)
-        ctx.move(to: a.start)
-        ctx.addLine(to: shaftEnd)
-        ctx.strokePath()
-        ctx.setFillColor(a.colour.cgColor)
-        ctx.move(to: a.end)
-        ctx.addLine(to: CGPoint(x: base.x - uy * headWidth / 2, y: base.y + ux * headWidth / 2))
-        ctx.addLine(to: CGPoint(x: base.x + uy * headWidth / 2, y: base.y - ux * headWidth / 2))
-        ctx.closePath()
-        ctx.fillPath()
+        if a.arrowStyle == .dashed {
+            ctx.setLineDash(phase: 0, lengths: [a.lineWidth * 3, a.lineWidth * 2.2])
+        }
+
+        switch a.arrowStyle {
+        case .curved:
+            // Quadratic bend, bowed perpendicular to the chord; the head
+            // follows the curve's tangent at the tip.
+            let mid = CGPoint(x: (a.start.x + a.end.x) / 2, y: (a.start.y + a.end.y) / 2)
+            let ux = dx / len, uy = dy / len
+            let control = CGPoint(x: mid.x - uy * len * 0.22, y: mid.y + ux * len * 0.22)
+            let tangent = CGPoint(x: a.end.x - control.x, y: a.end.y - control.y)
+            let tLen = max(hypot(tangent.x, tangent.y), 0.5)
+            let tx = tangent.x / tLen, ty = tangent.y / tLen
+            let shaftEnd = CGPoint(
+                x: a.end.x - tx * headLength * 0.6, y: a.end.y - ty * headLength * 0.6)
+            ctx.move(to: a.start)
+            ctx.addQuadCurve(to: shaftEnd, control: control)
+            ctx.strokePath()
+            ctx.setLineDash(phase: 0, lengths: [])
+            fillHead(at: a.end, ux: tx, uy: ty, length: headLength, in: ctx)
+        case .double:
+            let ux = dx / len, uy = dy / len
+            let shaftStart = CGPoint(
+                x: a.start.x + ux * headLength * 0.6, y: a.start.y + uy * headLength * 0.6)
+            let shaftEnd = CGPoint(
+                x: a.end.x - ux * headLength * 0.6, y: a.end.y - uy * headLength * 0.6)
+            ctx.move(to: shaftStart)
+            ctx.addLine(to: shaftEnd)
+            ctx.strokePath()
+            ctx.setLineDash(phase: 0, lengths: [])
+            fillHead(at: a.end, ux: ux, uy: uy, length: headLength, in: ctx)
+            fillHead(at: a.start, ux: -ux, uy: -uy, length: headLength, in: ctx)
+        case .straight, .dashed:
+            let ux = dx / len, uy = dy / len
+            // Stop the shaft short of the tip so the cap doesn't poke past the head.
+            let shaftEnd = CGPoint(
+                x: a.end.x - ux * headLength * 0.6, y: a.end.y - uy * headLength * 0.6)
+            ctx.move(to: a.start)
+            ctx.addLine(to: shaftEnd)
+            ctx.strokePath()
+            ctx.setLineDash(phase: 0, lengths: [])
+            fillHead(at: a.end, ux: ux, uy: uy, length: headLength, in: ctx)
+        }
     }
 
-    private static func counterTextColour(on colour: NSColor) -> NSColor {
-        let c = colour.usingColorSpace(.sRGB) ?? colour
-        let luminance = 0.299 * c.redComponent + 0.587 * c.greenComponent + 0.114 * c.blueComponent
-        return luminance > 0.7 ? .black : .white
+    private static func fillHead(
+        at tip: CGPoint, ux: CGFloat, uy: CGFloat, length: CGFloat, in ctx: CGContext
+    ) {
+        let width = length * 0.85
+        let base = CGPoint(x: tip.x - ux * length, y: tip.y - uy * length)
+        ctx.move(to: tip)
+        ctx.addLine(to: CGPoint(x: base.x - uy * width / 2, y: base.y + ux * width / 2))
+        ctx.addLine(to: CGPoint(x: base.x + uy * width / 2, y: base.y - ux * width / 2))
+        ctx.closePath()
+        ctx.fillPath()
     }
 
     // MARK: Export composite
@@ -414,7 +595,12 @@ enum AnnotatorRender {
         for a in annotations where a.kind == .redact {
             draw(a, in: ctx, canvasHeight: pointH, redactPatch: patch(a))
         }
-        for a in annotations where a.kind != .redact {
+        // Spotlights dim above redactions and below everything else.
+        drawSpotlightDim(
+            spotlights: annotations.filter { $0.kind == .spotlight }.map(\.rect),
+            canvasSize: CGSize(width: CGFloat(base.width) / scale, height: pointH),
+            in: ctx)
+        for a in annotations where a.kind != .redact && a.kind != .spotlight {
             draw(a, in: ctx, canvasHeight: pointH, redactPatch: nil)
         }
         NSGraphicsContext.restoreGraphicsState()
@@ -473,7 +659,19 @@ final class AnnotatorRedactRenderer {
             filter.center = .zero   // grid anchored to the image — stable while dragging
             filter.scale = Float(max(16, min(px.width, px.height) / 8))
             guard let out = filter.outputImage?.cropped(to: px) else { return nil }
-            output = out
+            // Noise overlay: clean pixellation preserves exact cell averages,
+            // which is enough to reverse small text — randomisation kills that.
+            output = noised(out, over: px, alpha: 0.08)
+        case .secure:
+            // Belt and braces: coarse cells, then a heavy blur, then noise.
+            let filter = CIFilter.pixellate()
+            filter.inputImage = baseCI.clampedToExtent()
+            filter.center = .zero
+            filter.scale = Float(max(24, min(px.width, px.height) / 6))
+            guard let pixellated = filter.outputImage else { return nil }
+            let blurred = pixellated.clampedToExtent()
+                .applyingGaussianBlur(sigma: 22).cropped(to: px)
+            output = noised(blurred, over: px, alpha: 0.12)
         case .blackout:
             return nil
         }
@@ -486,5 +684,16 @@ final class AnnotatorRedactRenderer {
             height: px.height / scale
         )
         return (pointRect, cg)
+    }
+
+    /// Monochrome random noise composited over the patch — irreversibility
+    /// comes from the noise being unknowable, not from its strength.
+    private func noised(_ image: CIImage, over extent: CGRect, alpha: CGFloat) -> CIImage {
+        guard let random = CIFilter.randomGenerator().outputImage else { return image }
+        let matrix = CIFilter.colorMatrix()
+        matrix.inputImage = random
+        matrix.aVector = CIVector(x: 0, y: 0, z: 0, w: alpha)
+        guard let faded = matrix.outputImage?.cropped(to: extent) else { return image }
+        return faded.composited(over: image)
     }
 }
