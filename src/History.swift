@@ -122,9 +122,24 @@ private struct HistoryView: View {
 
     @State private var records: [HistoryRecord] = []
     @State private var filter: Filter = .all
+    @State private var searchText = ""
 
     private var filtered: [HistoryRecord] {
-        records.filter { filter.matches($0) }
+        records.filter { record in
+            guard filter.matches(record) else { return false }
+            let query = searchText.trimmingCharacters(in: .whitespaces).lowercased()
+            guard !query.isEmpty else { return true }
+            // OCR text makes captures findable by what's IN them — the whole
+            // point of storing it in the manifest.
+            let haystacks = [
+                record.manifest.ocrText,
+                record.manifest.source?.appName,
+                record.manifest.source?.windowTitle,
+                record.manifest.media.path,
+                record.manifest.notes,
+            ]
+            return haystacks.contains { $0?.lowercased().contains(query) == true }
+        }
     }
 
     var body: some View {
@@ -134,7 +149,27 @@ private struct HistoryView: View {
                     ForEach(Filter.allCases, id: \.self) { Text($0.rawValue) }
                 }
                 .pickerStyle(.segmented)
-                .frame(maxWidth: 340)
+                .frame(maxWidth: 300)
+                HStack(spacing: 4) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    TextField("Search text in captures", text: $searchText)
+                        .textFieldStyle(.plain)
+                    if !searchText.isEmpty {
+                        Button {
+                            searchText = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
+                .frame(maxWidth: 260)
                 Spacer()
                 Text("\(filtered.count) capture\(filtered.count == 1 ? "" : "s")")
                     .font(.caption)

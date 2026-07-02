@@ -360,6 +360,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         recentsItem.submenu = recentsMenu
         menu.addItem(recentsItem)
         menu.addItem(item("Capture History…", #selector(showHistory), key: ""))
+        if QuickAccessOverlay.shared.canRestore {
+            menu.addItem(item("Restore Last Capture Card", #selector(restoreCard), key: ""))
+        }
         menu.addItem(item("Open Captures Folder", #selector(openCapturesFolder), key: ""))
         menu.addItem(.separator())
         menu.addItem(item("Settings…", #selector(showPreferences), key: ","))
@@ -404,6 +407,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func showHistory() {
         HistoryController.shared.show()
+    }
+
+    @objc private func restoreCard() {
+        QuickAccessOverlay.shared.restoreLastClosed()
     }
 
     @objc private func openCapturesFolder() {

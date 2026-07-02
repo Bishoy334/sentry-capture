@@ -16,8 +16,17 @@ final class QuickAccessOverlay {
 
     /// Newest first — index 0 sits nearest the corner.
     private var cards: [QAOCardPanel] = []
+    /// Dismissed cards, newest last — "Restore Last Capture Card" pops these.
+    private var recentlyClosed: [DeliveredCapture] = []
+
+    var canRestore: Bool { !recentlyClosed.isEmpty }
 
     private init() {}
+
+    func restoreLastClosed() {
+        guard let item = recentlyClosed.popLast() else { return }
+        push(item)
+    }
 
     func push(_ item: DeliveredCapture) {
         switch item.payload {
@@ -45,10 +54,13 @@ final class QuickAccessOverlay {
         }
         cards.insert(panel, at: 0)
         layout(entering: panel)
+        armAutoClose(panel)
     }
 
     private func dismiss(_ panel: QAOCardPanel) {
         guard let index = cards.firstIndex(where: { $0 === panel }) else { return }
+        recentlyClosed.append(panel.cardView.currentItem)
+        if recentlyClosed.count > 5 { recentlyClosed.removeFirst() }
         cards.remove(at: index)
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.18
@@ -61,16 +73,36 @@ final class QuickAccessOverlay {
         layout(entering: nil)
     }
 
+    /// Cards linger while the pointer is on them — the timer re-arms rather
+    /// than yanking a card out from under a hover.
+    private func armAutoClose(_ panel: QAOCardPanel) {
+        let seconds = Settings.shared.qaoAutoCloseSeconds
+        guard seconds > 0 else { return }
+        Task { @MainActor [weak self, weak panel] in
+            try? await Task.sleep(for: .seconds(seconds))
+            guard let self, let panel, self.cards.contains(where: { $0 === panel }) else { return }
+            if NSMouseInRect(NSEvent.mouseLocation, panel.frame, false) {
+                self.armAutoClose(panel)   // hovered: check again in a while
+            } else {
+                self.dismiss(panel)
+            }
+        }
+    }
+
     /// Stack per screen: newest at the corner, older cards pushed up.
     private func layout(entering: QAOCardPanel?) {
         var cursors: [CGDirectDisplayID: CGFloat] = [:]
         var targets: [(QAOCardPanel, NSRect)] = []
+        let rightCorner = Settings.shared.qaoCorner == "bottomRight"
         for panel in cards {
             guard let screen = panel.homeScreen else { continue }
             let visible = screen.visibleFrame
             let y = cursors[screen.displayID] ?? (visible.minY + Self.margin)
             let size = panel.frame.size
-            targets.append((panel, NSRect(x: visible.minX + Self.margin, y: y, width: size.width, height: size.height)))
+            let x = rightCorner
+                ? visible.maxX - Self.margin - size.width
+                : visible.minX + Self.margin
+            targets.append((panel, NSRect(x: x, y: y, width: size.width, height: size.height)))
             cursors[screen.displayID] = y + size.height + Self.gap
         }
         if let entering, let target = targets.first(where: { $0.0 === entering })?.1 {
@@ -184,6 +216,7 @@ private final class QAOCardPanel: NSPanel {
 @MainActor
 private final class QAOCardView: NSView, NSDraggingSource {
     var onDismiss: (() -> Void)?
+    var currentItem: DeliveredCapture { item }
 
     private var item: DeliveredCapture
     private let thumbnail: NSImage?

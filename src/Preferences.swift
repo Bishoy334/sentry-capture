@@ -101,6 +101,17 @@ private struct PrefsGeneralPane: View {
                 Toggle("Copy to clipboard", isOn: $settings.copyToClipboard)
                 Toggle("Save to disk", isOn: $settings.saveToDisk)
                 Toggle("Show quick access overlay", isOn: $settings.showQuickAccess)
+                Picker("Overlay corner", selection: $settings.qaoCorner) {
+                    Text("Bottom left").tag("bottomLeft")
+                    Text("Bottom right").tag("bottomRight")
+                }
+                Picker("Auto-close cards", selection: $settings.qaoAutoCloseSeconds) {
+                    Text("Never").tag(0)
+                    Text("After 10 seconds").tag(10)
+                    Text("After 30 seconds").tag(30)
+                    Text("After 1 minute").tag(60)
+                    Text("After 5 minutes").tag(300)
+                }
                 Toggle("Play capture sound", isOn: $settings.playSound)
             }
             Section("System") {

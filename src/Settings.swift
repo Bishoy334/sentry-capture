@@ -21,6 +21,8 @@ final class Settings: ObservableObject {
     @Published var copyToClipboard: Bool
     @Published var saveToDisk: Bool
     @Published var showQuickAccess: Bool
+    @Published var qaoCorner: String
+    @Published var qaoAutoCloseSeconds: Int
     @Published var playSound: Bool
     @Published var downscaleRetina: Bool
     @Published var showCursorInRecording: Bool
@@ -68,6 +70,8 @@ final class Settings: ObservableObject {
         copyToClipboard = d.object(forKey: "copyToClipboard") as? Bool ?? true
         saveToDisk = d.object(forKey: "saveToDisk") as? Bool ?? true
         showQuickAccess = d.object(forKey: "showQuickAccess") as? Bool ?? true
+        qaoCorner = d.string(forKey: "qaoCorner") ?? "bottomLeft"
+        qaoAutoCloseSeconds = d.object(forKey: "qaoAutoCloseSeconds") as? Int ?? 0
         playSound = d.object(forKey: "playSound") as? Bool ?? true
         downscaleRetina = d.object(forKey: "downscaleRetina") as? Bool ?? false
         showCursorInRecording = d.object(forKey: "showCursorInRecording") as? Bool ?? true
@@ -112,6 +116,8 @@ final class Settings: ObservableObject {
         d.set(copyToClipboard, forKey: "copyToClipboard")
         d.set(saveToDisk, forKey: "saveToDisk")
         d.set(showQuickAccess, forKey: "showQuickAccess")
+        d.set(qaoCorner, forKey: "qaoCorner")
+        d.set(qaoAutoCloseSeconds, forKey: "qaoAutoCloseSeconds")
         d.set(playSound, forKey: "playSound")
         d.set(downscaleRetina, forKey: "downscaleRetina")
         d.set(showCursorInRecording, forKey: "showCursorInRecording")
