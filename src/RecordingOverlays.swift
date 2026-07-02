@@ -14,6 +14,7 @@ final class RecordingOverlays {
     private var webcamPanel: WebcamBubblePanel?
     private var keystrokePanel: KeystrokeHUDPanel?
     private var keyMonitor: Any?
+    private var webcamTask: Task<Void, Never>?
 
     init(rect: CGRect) {
         self.rect = rect
@@ -41,10 +42,18 @@ final class RecordingOverlays {
 
     // MARK: Webcam bubble
 
+    /// The Recorder awaits this before building its content filter — the
+    /// bubble panel must exist by then or the filter's window snapshot can't
+    /// leave it capturable and it silently vanishes from the video.
+    func settle() async {
+        await webcamTask?.value
+    }
+
     /// Asks for camera access on first use; shows nothing when denied.
     func showWebcam() {
-        guard webcamPanel == nil else { return }
-        Task { @MainActor in
+        guard webcamPanel == nil, webcamTask == nil else { return }
+        webcamTask = Task { @MainActor in
+            defer { self.webcamTask = nil }
             guard await AVCaptureDevice.requestAccess(for: .video) else {
                 Toast.show("Camera access denied — recording without the bubble",
                            symbol: "video.slash")

@@ -130,6 +130,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if RecordingController.shared.isBusy {
             if action == .recordVideo || action == .recordGIF {
                 RecordingController.shared.stop()
+            } else if action == .pauseRecording {
+                RecordingController.shared.togglePause()
             }
             return
         }
@@ -145,6 +147,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         switch action {
+        case .pauseRecording:
+            break   // only meaningful while recording — handled in the gate above
         case .allInOne:
             SelectionController.shared.begin(mode: .allInOne) { selection in
                 guard let selection, let chosen = selection.chosenAction else { return }
@@ -387,9 +391,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         item.target = self
         item.representedObject = action.rawValue
         if let hotkey = Settings.shared.hotkey(for: action) {
-            // Shown as plain suffix — Carbon owns the actual binding.
-            item.title = action.title
             item.toolTip = hotkey.display
+            // Display only — Carbon owns the global binding; the menu shows
+            // the shortcut like any standard app menu.
+            if let equivalent = hotkey.menuKeyEquivalent {
+                item.keyEquivalent = equivalent.key
+                item.keyEquivalentModifierMask = equivalent.mask
+            }
         }
         return item
     }

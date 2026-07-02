@@ -123,6 +123,14 @@ final class RecordingController {
         onStateChange?()
     }
 
+    /// Stop and throw the file away — for the take that went wrong.
+    func discardRecording() {
+        guard phase == .recording else { return }
+        discardOnFinish = true
+        stop()
+    }
+    private var discardOnFinish = false
+
     // MARK: Configure phase
 
     private func cancelConfiguration() {
@@ -182,6 +190,11 @@ final class RecordingController {
         // the window-level exclusion path snapshots it into the excluded list —
         // it must never appear in the recording.
         showRecordingHUD(for: selection)
+        // And the webcam bubble must ALSO exist by then, for the opposite
+        // reason: its window has to be findable so the filter can leave it
+        // capturable — a bubble that spawns after the snapshot vanishes from
+        // the video (camera permission makes its creation async).
+        await overlays?.settle()
 
         let filter: SCContentFilter
         if let window = selection.window {
@@ -373,13 +386,24 @@ final class RecordingController {
         let url = outputURL
         let capturedOrigin = origin
         let engine = writerEngine
+        let discard = discardOnFinish
         origin = nil
         writerEngine = nil
         outputURL = nil
         selection = nil
         isRecording = false
         isPaused = false
+        discardOnFinish = false
         onStateChange?()
+
+        if discard {
+            Task {
+                _ = try? await engine?.finish()
+                if let url { try? FileManager.default.removeItem(at: url) }
+                Toast.show("Recording discarded", symbol: "trash")
+            }
+            return
+        }
 
         if let error {
             Toast.show("Recording failed: \(error.localizedDescription)",
@@ -606,8 +630,11 @@ final class RecordingController {
         guard recordingHUD == nil else { return }
         let hud = RecordingHUDPanel(
             displayFrameCG: selection.display.frame,
+            stopHint: Settings.shared.hotkey(for: asGIF ? .recordGIF : .recordVideo)?.display,
+            pauseHint: Settings.shared.hotkey(for: .pauseRecording)?.display,
             onPause: { RecordingController.shared.togglePause() },
-            onStop: { RecordingController.shared.stop() })
+            onStop: { RecordingController.shared.stop() },
+            onDiscard: { RecordingController.shared.discardRecording() })
         hud.orderFrontRegardless()
         recordingHUD = hud
     }
@@ -627,21 +654,31 @@ private final class RecorderDelegateProxy: NSObject, SCStreamDelegate {
 
 // MARK: - Recording HUD
 
-/// Floating pill shown while recording: elapsed time, pause/resume, stop.
-/// Bottom-centre of the recorded display, draggable; created before the
-/// content filter is built so it lands in the exclusion list.
+/// Action bar shown while recording — Zoom-style, top-centre of the recorded
+/// display: elapsed time, then Pause / Stop / Discard with their keyboard
+/// shortcuts spelled out. Draggable; created before the content filter is
+/// built so it never appears in the video.
 @MainActor
 private final class RecordingHUDPanel: NSPanel {
     private let onPause: () -> Void
+    private let onStop: () -> Void
+    private let onDiscard: () -> Void
     private let elapsedLabel = NSTextField(labelWithString: "0:00")
     private let dot = NSView()
-    private var pauseButton: NSButton!
+    private var pauseIcon: NSImageView!
+    private var pauseTitle: NSTextField!
     private var timer: Timer?
 
-    init(displayFrameCG: CGRect, onPause: @escaping () -> Void, onStop: @escaping () -> Void) {
+    init(
+        displayFrameCG: CGRect, stopHint: String?, pauseHint: String?,
+        onPause: @escaping () -> Void, onStop: @escaping () -> Void,
+        onDiscard: @escaping () -> Void
+    ) {
         self.onPause = onPause
+        self.onStop = onStop
+        self.onDiscard = onDiscard
         super.init(
-            contentRect: NSRect(x: 0, y: 0, width: 200, height: 40),
+            contentRect: NSRect(x: 0, y: 0, width: 200, height: 44),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered, defer: false)
         isOpaque = false
@@ -661,32 +698,79 @@ private final class RecordingHUDPanel: NSPanel {
         dot.widthAnchor.constraint(equalToConstant: 8).isActive = true
         dot.heightAnchor.constraint(equalToConstant: 8).isActive = true
 
-        elapsedLabel.font = .monospacedDigitSystemFont(ofSize: 13, weight: .medium)
+        elapsedLabel.font = .monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
         elapsedLabel.textColor = .white
 
-        func iconButton(_ symbol: String, tip: String, action: Selector) -> NSButton {
-            let button = NSButton()
-            button.isBordered = false
-            button.setButtonType(.momentaryChange)
-            button.imagePosition = .imageOnly
-            button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: tip)?
-                .withSymbolConfiguration(.init(pointSize: 13, weight: .semibold))
-            button.contentTintColor = .white
-            button.toolTip = tip
-            button.target = self
-            button.action = action
-            return button
+        /// icon · title · greyed shortcut hint, all one clickable unit.
+        func actionItem(
+            symbol: String, title: String, hint: String?, tint: NSColor,
+            action: Selector
+        ) -> (NSView, NSImageView, NSTextField) {
+            let icon = NSImageView(image: NSImage(
+                systemSymbolName: symbol, accessibilityDescription: title)?
+                .withSymbolConfiguration(.init(pointSize: 12, weight: .semibold)) ?? NSImage())
+            icon.contentTintColor = tint
+            let label = NSTextField(labelWithString: title)
+            label.font = .systemFont(ofSize: 12, weight: .medium)
+            label.textColor = .white
+            var views: [NSView] = [icon, label]
+            if let hint {
+                let hintLabel = NSTextField(labelWithString: hint)
+                hintLabel.font = .systemFont(ofSize: 11, weight: .regular)
+                hintLabel.textColor = NSColor.white.withAlphaComponent(0.45)
+                views.append(hintLabel)
+            }
+            let stack = NSStackView(views: views)
+            stack.orientation = .horizontal
+            stack.spacing = 5
+            let wrapper = HUDActionView()
+            wrapper.onClick = { [weak self] in
+                guard let self else { return }
+                self.perform(action)
+            }
+            wrapper.translatesAutoresizingMaskIntoConstraints = false
+            stack.translatesAutoresizingMaskIntoConstraints = false
+            wrapper.addSubview(stack)
+            NSLayoutConstraint.activate([
+                stack.leadingAnchor.constraint(equalTo: wrapper.leadingAnchor, constant: 8),
+                stack.trailingAnchor.constraint(equalTo: wrapper.trailingAnchor, constant: -8),
+                stack.topAnchor.constraint(equalTo: wrapper.topAnchor, constant: 5),
+                stack.bottomAnchor.constraint(equalTo: wrapper.bottomAnchor, constant: -5),
+            ])
+            return (wrapper, icon, label)
         }
-        pauseButton = iconButton("pause.fill", tip: "Pause", action: #selector(pauseTapped))
-        let stopButton = iconButton("stop.fill", tip: "Stop", action: #selector(stopTapped))
-        stopButton.contentTintColor = .systemRed
-        self.onStopAction = onStop
 
-        let stack = NSStackView(views: [dot, elapsedLabel, pauseButton, stopButton])
+        let (pauseView, pauseIcon, pauseTitle) = actionItem(
+            symbol: "pause.fill", title: "Pause", hint: pauseHint,
+            tint: .white, action: #selector(pauseTapped))
+        self.pauseIcon = pauseIcon
+        self.pauseTitle = pauseTitle
+        let (stopView, _, _) = actionItem(
+            symbol: "stop.fill", title: "Stop", hint: stopHint,
+            tint: .systemRed, action: #selector(stopTapped))
+        let (discardView, _, _) = actionItem(
+            symbol: "trash", title: "Discard", hint: nil,
+            tint: NSColor.white.withAlphaComponent(0.7), action: #selector(discardTapped))
+
+        func hairline() -> NSView {
+            let line = NSView()
+            line.wantsLayer = true
+            line.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.12).cgColor
+            line.translatesAutoresizingMaskIntoConstraints = false
+            line.widthAnchor.constraint(equalToConstant: 1).isActive = true
+            line.heightAnchor.constraint(equalToConstant: 16).isActive = true
+            return line
+        }
+
+        let stack = NSStackView(views: [
+            dot, elapsedLabel, hairline(), pauseView, stopView, hairline(), discardView,
+        ])
         stack.orientation = .horizontal
         stack.alignment = .centerY
-        stack.spacing = 10
-        stack.edgeInsets = NSEdgeInsets(top: 8, left: 14, bottom: 8, right: 12)
+        stack.spacing = 6
+        stack.setCustomSpacing(10, after: dot)
+        stack.setCustomSpacing(10, after: elapsedLabel)
+        stack.edgeInsets = NSEdgeInsets(top: 6, left: 14, bottom: 6, right: 10)
 
         let card = HUDStyle.card(appearance: .vibrantDark)
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -701,8 +785,11 @@ private final class RecordingHUDPanel: NSPanel {
 
         let size = stack.fittingSize
         let display = Coords.appKitRect(fromCG: displayFrameCG)
+        let visibleTop = (NSScreen.screens.first {
+            $0.frame.intersects(display)
+        }?.visibleFrame.maxY) ?? display.maxY
         setFrame(
-            NSRect(x: display.midX - size.width / 2, y: display.minY + 24,
+            NSRect(x: display.midX - size.width / 2, y: visibleTop - size.height - 12,
                    width: size.width, height: size.height),
             display: false)
 
@@ -714,16 +801,14 @@ private final class RecordingHUDPanel: NSPanel {
         }
     }
 
-    private var onStopAction: (() -> Void)?
-
     func setPaused(_ paused: Bool) {
         dot.layer?.backgroundColor =
             (paused ? NSColor.systemOrange : .systemRed).cgColor
-        pauseButton.image = NSImage(
+        pauseIcon.image = NSImage(
             systemSymbolName: paused ? "play.fill" : "pause.fill",
             accessibilityDescription: paused ? "Resume" : "Pause")?
-            .withSymbolConfiguration(.init(pointSize: 13, weight: .semibold))
-        pauseButton.toolTip = paused ? "Resume" : "Pause"
+            .withSymbolConfiguration(.init(pointSize: 12, weight: .semibold))
+        pauseTitle.stringValue = paused ? "Resume" : "Pause"
     }
 
     override func orderOut(_ sender: Any?) {
@@ -732,12 +817,48 @@ private final class RecordingHUDPanel: NSPanel {
         super.orderOut(sender)
     }
 
-    @objc private func pauseTapped() {
-        onPause()
+    @objc private func pauseTapped() { onPause() }
+    @objc private func stopTapped() { onStop() }
+    @objc private func discardTapped() { onDiscard() }
+}
+
+/// Clickable hover-washed region for a HUD action group.
+@MainActor
+private final class HUDActionView: NSView {
+    var onClick: (() -> Void)?
+
+    init() {
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = 7
     }
 
-    @objc private func stopTapped() {
-        onStopAction?()
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func updateTrackingAreas() {
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(
+            rect: .zero,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self, userInfo: nil))
+        super.updateTrackingAreas()
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.12).cgColor
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        layer?.backgroundColor = nil
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        if bounds.contains(convert(event.locationInWindow, from: nil)) {
+            onClick?()
+        }
     }
 }
 

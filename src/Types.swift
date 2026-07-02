@@ -110,6 +110,7 @@ enum HotkeyAction: String, CaseIterable, Codable {
     case scrollingCapture
     case recordVideo
     case recordGIF
+    case pauseRecording
     case copyText
     case pinArea
     case timedCapture
@@ -126,6 +127,7 @@ enum HotkeyAction: String, CaseIterable, Codable {
         case .scrollingCapture: return "Scrolling Capture"
         case .recordVideo: return "Record Video"
         case .recordGIF: return "Record GIF"
+        case .pauseRecording: return "Pause/Resume Recording"
         case .copyText: return "Copy Text (OCR)"
         case .pinArea: return "Pin Area"
         case .timedCapture: return "Timed Area Capture"
@@ -150,6 +152,7 @@ enum HotkeyAction: String, CaseIterable, Codable {
         case .pinArea: return Hotkey(keyCode: UInt32(kVK_ANSI_8), carbonModifiers: optionCmd)
         case .colourPicker: return Hotkey(keyCode: UInt32(kVK_ANSI_9), carbonModifiers: optionCmd)
         case .measure: return Hotkey(keyCode: UInt32(kVK_ANSI_0), carbonModifiers: optionCmd)
+        case .pauseRecording: return Hotkey(keyCode: UInt32(kVK_ANSI_P), carbonModifiers: optionCmd)
         case .recordGIF, .timedCapture, .checkContrast: return nil
         }
     }
@@ -174,6 +177,19 @@ struct Hotkey: Codable, Equatable {
     static func keyName(for keyCode: UInt32) -> String {
         if let name = keyNames[Int(keyCode)] { return name }
         return "key\(keyCode)"
+    }
+
+    /// NSMenuItem display form — nil for keys a menu can't render (arrows,
+    /// F-keys and other multi-char names stay tooltip-only).
+    var menuKeyEquivalent: (key: String, mask: NSEvent.ModifierFlags)? {
+        let name = Hotkey.keyName(for: keyCode)
+        guard name.count == 1 else { return nil }
+        var mask: NSEvent.ModifierFlags = []
+        if carbonModifiers & UInt32(controlKey) != 0 { mask.insert(.control) }
+        if carbonModifiers & UInt32(optionKey) != 0 { mask.insert(.option) }
+        if carbonModifiers & UInt32(shiftKey) != 0 { mask.insert(.shift) }
+        if carbonModifiers & UInt32(cmdKey) != 0 { mask.insert(.command) }
+        return (name.lowercased(), mask)
     }
 
     private static let keyNames: [Int: String] = [

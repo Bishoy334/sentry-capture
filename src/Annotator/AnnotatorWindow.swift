@@ -76,6 +76,8 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     private var toolButtons: [(tool: AnnotatorTool, button: NSButton)] = []
     private let optionsStack = NSStackView()
     private var optionsBarHeight: NSLayoutConstraint!
+    private let sidebarStack = NSStackView()
+    private var sidebarWidth: NSLayoutConstraint!
     private var undoButton: NSButton!
     private var redoButton: NSButton!
     private let zoomLabel = NSTextField(labelWithString: "100%")
@@ -184,6 +186,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
 
         let toolbar = buildToolbar()
         let optionsBar = buildOptionsBar()
+        let sidebar = buildBackgroundSidebar()
         let footer = buildFooter()
 
         backdrop.addSubview(canvas)
@@ -207,10 +210,11 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             MainActor.assumeIsolated { self?.refreshZoomLabel() }
         }
 
-        for v in [toolbar, optionsBar, scrollView, footer] {
+        for v in [toolbar, optionsBar, sidebar, scrollView, footer] {
             v.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(v)
         }
+        sidebarWidth = sidebar.widthAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
             toolbar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             toolbar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
@@ -221,7 +225,13 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             optionsBar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             optionsBar.topAnchor.constraint(equalTo: toolbar.bottomAnchor),
 
-            scrollView.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            // Background workspace column — zero width until toggled on.
+            sidebarWidth,
+            sidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            sidebar.topAnchor.constraint(equalTo: optionsBar.bottomAnchor),
+            sidebar.bottomAnchor.constraint(equalTo: footer.topAnchor),
+
+            scrollView.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             scrollView.topAnchor.constraint(equalTo: optionsBar.bottomAnchor),
             scrollView.bottomAnchor.constraint(equalTo: footer.topAnchor),
@@ -479,7 +489,42 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         backdrop.needsDisplay = true
     }
 
-    private func rebuildBackgroundBar() {
+    /// The background workspace: a left column, not another toolbar row —
+    /// fills, spacing and shadow live together like an inspector.
+    private func buildBackgroundSidebar() -> NSView {
+        let container = NSView()
+        container.clipsToBounds = true
+        sidebarStack.orientation = .vertical
+        sidebarStack.alignment = .leading
+        sidebarStack.spacing = 10
+        sidebarStack.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(sidebarStack)
+        let edge = hairline()
+        container.addSubview(edge)
+        NSLayoutConstraint.activate([
+            sidebarStack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
+            sidebarStack.topAnchor.constraint(equalTo: container.topAnchor, constant: 14),
+            sidebarStack.widthAnchor.constraint(equalToConstant: 162),
+            edge.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            edge.topAnchor.constraint(equalTo: container.topAnchor),
+            edge.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            edge.widthAnchor.constraint(equalToConstant: 1),
+        ])
+        return container
+    }
+
+    private func rebuildBackgroundSidebar() {
+        for view in sidebarStack.arrangedSubviews {
+            view.removeFromSuperview()
+        }
+
+        func eyebrow(_ text: String) -> NSTextField {
+            let label = NSTextField(labelWithString: text)
+            label.font = .systemFont(ofSize: 10, weight: .semibold)
+            label.textColor = .tertiaryLabelColor
+            return label
+        }
+
         func fillSwatch(_ tag: Int, tooltip: String) -> NSButton {
             let button = NSButton()
             button.title = ""
@@ -487,70 +532,74 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             button.setButtonType(.momentaryChange)
             button.toolTip = tooltip
             button.wantsLayer = true
-            button.layer?.cornerRadius = 8
+            button.layer?.cornerRadius = 9
             button.layer?.borderWidth = 1
             button.layer?.borderColor = NSColor.separatorColor.cgColor
             button.tag = tag
             button.target = self
             button.action = #selector(backgroundFillTapped(_:))
             button.translatesAutoresizingMaskIntoConstraints = false
-            button.widthAnchor.constraint(equalToConstant: 16).isActive = true
-            button.heightAnchor.constraint(equalToConstant: 16).isActive = true
+            button.widthAnchor.constraint(equalToConstant: 18).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 18).isActive = true
             return button
         }
 
         // Tags: 0 none, 1... solids, 100... gradients.
+        var swatches: [NSButton] = []
         let none = fillSwatch(0, tooltip: "No background")
         none.image = NSImage(
             systemSymbolName: "slash.circle", accessibilityDescription: "No background")
         none.contentTintColor = .secondaryLabelColor
-        optionsStack.addArrangedSubview(none)
+        swatches.append(none)
         for (i, preset) in AnnotatorBackgroundStyle.solidPresets.enumerated() {
             let swatch = fillSwatch(1 + i, tooltip: preset.name)
             swatch.layer?.backgroundColor = preset.colour.cgColor
-            optionsStack.addArrangedSubview(swatch)
+            swatches.append(swatch)
         }
         for (i, preset) in AnnotatorBackgroundStyle.gradientPresets.enumerated() {
             let swatch = fillSwatch(100 + i, tooltip: preset.name)
             let gradient = CAGradientLayer()
-            gradient.frame = CGRect(x: 0, y: 0, width: 16, height: 16)
-            gradient.cornerRadius = 8
+            gradient.frame = CGRect(x: 0, y: 0, width: 18, height: 18)
+            gradient.cornerRadius = 9
             gradient.colors = preset.colours.map(\.cgColor)
             gradient.startPoint = CGPoint(x: 0, y: 1)
             gradient.endPoint = CGPoint(x: 1, y: 0)
             swatch.layer?.addSublayer(gradient)
-            optionsStack.addArrangedSubview(swatch)
+            swatches.append(swatch)
         }
 
-        let paddingLabel = NSTextField(labelWithString: "Padding")
-        paddingLabel.font = .systemFont(ofSize: 11)
-        paddingLabel.textColor = .secondaryLabelColor
-        let padding = NSSlider(
-            value: backgroundStyle.padding, minValue: 16, maxValue: 140,
-            target: self, action: #selector(backgroundPaddingChanged(_:)))
-        padding.controlSize = .small
-        padding.translatesAutoresizingMaskIntoConstraints = false
-        padding.widthAnchor.constraint(equalToConstant: 90).isActive = true
+        sidebarStack.addArrangedSubview(eyebrow("FILL"))
+        for chunk in stride(from: 0, to: swatches.count, by: 6) {
+            let row = NSStackView(views: Array(swatches[chunk..<min(chunk + 6, swatches.count)]))
+            row.orientation = .horizontal
+            row.spacing = 6
+            sidebarStack.addArrangedSubview(row)
+        }
 
-        let radiusLabel = NSTextField(labelWithString: "Corners")
-        radiusLabel.font = .systemFont(ofSize: 11)
-        radiusLabel.textColor = .secondaryLabelColor
-        let radius = NSSlider(
-            value: backgroundStyle.cornerRadius, minValue: 0, maxValue: 28,
-            target: self, action: #selector(backgroundRadiusChanged(_:)))
-        radius.controlSize = .small
-        radius.translatesAutoresizingMaskIntoConstraints = false
-        radius.widthAnchor.constraint(equalToConstant: 70).isActive = true
+        func slider(
+            _ label: String, value: Double, min: Double, max: Double, action: Selector
+        ) {
+            sidebarStack.addArrangedSubview(eyebrow(label))
+            let control = NSSlider(value: value, minValue: min, maxValue: max,
+                                   target: self, action: action)
+            control.controlSize = .small
+            control.translatesAutoresizingMaskIntoConstraints = false
+            control.widthAnchor.constraint(equalToConstant: 162).isActive = true
+            sidebarStack.addArrangedSubview(control)
+        }
+        slider("PADDING", value: backgroundStyle.padding, min: 16, max: 140,
+               action: #selector(backgroundPaddingChanged(_:)))
+        slider("CORNERS", value: backgroundStyle.cornerRadius, min: 0, max: 28,
+               action: #selector(backgroundRadiusChanged(_:)))
 
         let shadow = NSButton(
             checkboxWithTitle: "Shadow", target: self,
             action: #selector(backgroundShadowChanged(_:)))
         shadow.controlSize = .small
         shadow.state = backgroundStyle.shadow ? .on : .off
-
-        for view in [paddingLabel, padding, radiusLabel, radius, shadow] {
-            optionsStack.addArrangedSubview(view)
-        }
+        sidebarStack.addArrangedSubview(shadow)
+        sidebarStack.setCustomSpacing(14, after: sidebarStack.arrangedSubviews[
+            sidebarStack.arrangedSubviews.count - 2])
     }
 
     // MARK: Options bar contents
@@ -565,10 +614,6 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         defer {
             // No options for this tool → the bar cedes its strip to the canvas.
             optionsBarHeight.constant = optionsStack.arrangedSubviews.isEmpty ? 0 : 34
-        }
-        if backgroundBarActive, !canvas.cropActive {
-            rebuildBackgroundBar()
-            return
         }
         if canvas.cropActive {
             let aspect = NSSegmentedControl(
@@ -724,7 +769,14 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     // MARK: Actions
 
     @objc private func toolTapped(_ sender: NSButton) {
-        selectTool(AnnotatorTool.allCases[sender.tag])
+        let tool = AnnotatorTool.allCases[sender.tag]
+        // Re-clicking the crop tool toggles it off, cancelling the crop.
+        if tool == .crop, canvas.tool == .crop {
+            canvas.cancelCrop()
+            selectTool(.select)
+            return
+        }
+        selectTool(tool)
     }
 
     @objc private func sendToTapped(_ sender: NSButton) {
@@ -837,9 +889,13 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
 
     @objc private func backgroundTapped() {
         backgroundBarActive.toggle()
-        if backgroundBarActive, !backgroundStyle.isVisible {
-            backgroundStyle.fill = .gradient(0)
+        if backgroundBarActive {
+            if !backgroundStyle.isVisible {
+                backgroundStyle.fill = .gradient(0)
+            }
+            rebuildBackgroundSidebar()
         }
+        sidebarWidth.constant = backgroundBarActive ? 190 : 0
         refreshChrome()
     }
 

@@ -18,6 +18,9 @@ final class QuickAccessOverlay {
     private var cards: [QAOCardPanel] = []
     /// Dismissed cards, newest last — "Restore Last Capture Card" pops these.
     private var recentlyClosed: [DeliveredCapture] = []
+    /// Chevron toggle: slide the whole stack off-screen and back.
+    private var stackHidden = false
+    private var chevron: QAOChevronPanel?
 
     var canRestore: Bool { !recentlyClosed.isEmpty }
 
@@ -53,8 +56,33 @@ final class QuickAccessOverlay {
             self.dismiss(panel)
         }
         cards.insert(panel, at: 0)
+        // A fresh capture always reveals the stack — that's what it's for.
+        if stackHidden { setStackHidden(false) }
         layout(entering: panel)
         armAutoClose(panel)
+    }
+
+    fileprivate func setStackHidden(_ hidden: Bool) {
+        guard stackHidden != hidden else { return }
+        stackHidden = hidden
+        chevron?.setCollapsed(hidden)
+        if hidden {
+            for panel in cards {
+                NSAnimationContext.runAnimationGroup({ context in
+                    context.duration = 0.2
+                    context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+                    panel.animator().alphaValue = 0
+                    panel.animator().setFrame(panel.frame.offsetBy(dx: 0, dy: -36), display: true)
+                }, completionHandler: {
+                    MainActor.assumeIsolated {
+                        if self.stackHidden { panel.orderOut(nil) }
+                    }
+                })
+            }
+        } else {
+            for panel in cards { panel.orderFrontRegardless() }
+            layout(entering: nil)   // slides frames back and fades alpha in
+        }
     }
 
     private func dismiss(_ panel: QAOCardPanel) {
@@ -105,7 +133,9 @@ final class QuickAccessOverlay {
             guard let screen = panel.homeScreen else { continue }
             panel.isCollapsed = index >= 3 && !panel.userExpanded
             let visible = screen.visibleFrame
-            let y = cursors[screen.displayID] ?? (visible.minY + Self.margin)
+            // The chevron pill owns the corner itself; cards stack above it.
+            let y = cursors[screen.displayID]
+                ?? (visible.minY + Self.margin + QAOChevronPanel.height + Self.gap)
             let size = panel.isCollapsed
                 ? NSSize(width: panel.fullSize.width, height: QAOCardPanel.collapsedHeight)
                 : panel.fullSize
@@ -128,6 +158,84 @@ final class QuickAccessOverlay {
                 panel.animator().alphaValue = 1
             }
         }
+        updateChevron()
+    }
+
+    private func updateChevron() {
+        guard let screen = cards.first?.homeScreen else {
+            chevron?.orderOut(nil)
+            chevron = nil
+            stackHidden = false
+            return
+        }
+        if chevron == nil {
+            chevron = QAOChevronPanel { [weak self] in
+                guard let self else { return }
+                self.setStackHidden(!self.stackHidden)
+            }
+        }
+        let visible = screen.visibleFrame
+        let x = Settings.shared.qaoCorner == "bottomRight"
+            ? visible.maxX - Self.margin - QAOChevronPanel.width
+            : visible.minX + Self.margin
+        chevron?.setFrameOrigin(NSPoint(x: x, y: visible.minY + Self.margin))
+        chevron?.setCollapsed(stackHidden)
+        chevron?.orderFrontRegardless()
+    }
+}
+
+// MARK: - Stack chevron
+
+/// Tiny pill under the stack: chevron-down slides the cards off-screen,
+/// chevron-up brings them back.
+@MainActor
+private final class QAOChevronPanel: NSPanel {
+    static let width: CGFloat = 36
+    static let height: CGFloat = 20
+
+    private let onToggle: () -> Void
+    private let button = NSButton()
+
+    init(onToggle: @escaping () -> Void) {
+        self.onToggle = onToggle
+        super.init(
+            contentRect: NSRect(x: 0, y: 0, width: Self.width, height: Self.height),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered, defer: false)
+        isOpaque = false
+        backgroundColor = .clear
+        hasShadow = true
+        level = .statusBar
+        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        hidesOnDeactivate = false
+        isReleasedWhenClosed = false
+        animationBehavior = .none
+
+        let card = HUDStyle.card()
+        card.layer?.cornerRadius = Self.height / 2
+        button.isBordered = false
+        button.setButtonType(.momentaryChange)
+        button.imagePosition = .imageOnly
+        button.contentTintColor = NSColor.white.withAlphaComponent(0.75)
+        button.target = self
+        button.action = #selector(tapped)
+        button.frame = NSRect(x: 0, y: 0, width: Self.width, height: Self.height)
+        button.autoresizingMask = [.width, .height]
+        card.addSubview(button)
+        contentView = card
+        setCollapsed(false)
+    }
+
+    func setCollapsed(_ collapsed: Bool) {
+        button.image = NSImage(
+            systemSymbolName: collapsed ? "chevron.up" : "chevron.down",
+            accessibilityDescription: collapsed ? "Show captures" : "Hide captures")?
+            .withSymbolConfiguration(.init(pointSize: 10, weight: .bold))
+        button.toolTip = collapsed ? "Show captures" : "Hide captures"
+    }
+
+    @objc private func tapped() {
+        onToggle()
     }
 }
 
@@ -330,9 +438,13 @@ private final class QAOCardView: NSView, NSDraggingSource {
         }
         buildCaption(in: effect)
 
-        scrim.frame = thumbArea
+        // The scrim dims the WHOLE card (caption included) — a partial dim
+        // reads as a rendering glitch; the action buttons centre over the
+        // thumbnail area only.
+        scrim.frame = bounds
+        scrim.autoresizingMask = [.width, .height]
         scrim.wantsLayer = true
-        scrim.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.35).cgColor
+        scrim.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.45).cgColor
         scrim.alphaValue = 0
         effect.addSubview(scrim)
 
@@ -359,9 +471,9 @@ private final class QAOCardView: NSView, NSDraggingSource {
         let gap: CGFloat = 10
         let total = CGFloat(buttons.count) * side + CGFloat(buttons.count - 1) * gap
         var x = (bounds.width - total) / 2
+        let buttonY = Self.captionHeight + (thumbArea.height - side) / 2
         for button in buttons {
-            button.frame = NSRect(
-                x: x, y: (scrim.bounds.height - side) / 2, width: side, height: side)
+            button.frame = NSRect(x: x, y: buttonY, width: side, height: side)
             button.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin, .maxYMargin]
             scrim.addSubview(button)
             x += side + gap
