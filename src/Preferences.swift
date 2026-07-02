@@ -278,6 +278,12 @@ private struct PrefsRecordingPane: View {
                 Toggle("Record system audio", isOn: $settings.recordSystemAudio)
                 Toggle("Record microphone", isOn: $settings.recordMicrophone)
             }
+            Section {
+                Toggle("Show keystrokes", isOn: $settings.showKeystrokesInRecording)
+                Toggle("Show webcam bubble", isOn: $settings.showWebcamInRecording)
+            } footer: {
+                Text("Area recordings only. Keystrokes need Accessibility access; the bubble needs camera access.")
+            }
         }
         .formStyle(.grouped)
     }

@@ -37,6 +37,9 @@ final class RecordingController {
     private var recordingOutput: SCRecordingOutput?
     private var outputURL: URL?
     private let delegateProxy = RecorderDelegateProxy()
+    /// Keystroke HUD + webcam bubble — area recordings only (a window filter
+    /// can't capture other windows, so overlays are invisible there).
+    private var overlays: RecordingOverlays?
 
     private var borderPanel: NSPanel?
     private var borderView: RecorderBorderView?
@@ -73,7 +76,17 @@ final class RecordingController {
         phase = .configuring
         showBorderChrome(around: selection.rect)
         showControlStrip(for: selection, asGIF: asGIF)
+        if Settings.shared.showWebcamInRecording {
+            // Up during configuration so the user can place it before recording.
+            ensureOverlays()?.showWebcam()
+        }
         onStateChange?()
+    }
+
+    private func ensureOverlays() -> RecordingOverlays? {
+        guard let selection, selection.window == nil else { return nil }
+        if overlays == nil { overlays = RecordingOverlays(rect: selection.rect) }
+        return overlays
     }
 
     /// Anything but idle — the record hotkey must act as "stop/cancel" for
@@ -102,6 +115,8 @@ final class RecordingController {
         countdownTask?.cancel()
         countdownTask = nil
         removePanels()
+        overlays?.teardown()
+        overlays = nil
         selection = nil
         phase = .idle
         onStateChange?()
@@ -113,7 +128,12 @@ final class RecordingController {
         strip?.setControlsEnabled(false)   // Cancel stays live; Esc still works
 
         countdownTask = Task { @MainActor in
-            // Ask for the mic up front so the TCC prompt never lands mid-recording.
+            // Permission prompts land up front, never mid-recording.
+            if Settings.shared.showKeystrokesInRecording, selection.window == nil,
+               !RecordingOverlays.accessibilityTrusted(prompt: true) {
+                Toast.show("Grant Accessibility to show keystrokes — recording without them",
+                           symbol: "keyboard")
+            }
             var micUsable = false
             if Settings.shared.recordMicrophone {
                 micUsable = await AVCaptureDevice.requestAccess(for: .audio)
@@ -149,18 +169,42 @@ final class RecordingController {
         if let window = selection.window {
             filter = SCContentFilter(desktopIndependentWindow: window)
         } else {
-            // Exclude our whole application, not individual windows: QAO
-            // cards, toasts and pins must never appear in a recording, and
-            // app-level exclusion also covers windows created mid-recording.
-            // (The excludingWindows: [] spelling has a known zero-samples bug
-            // on some macOS builds — this overload is the safe one.)
             let pid = ProcessInfo.processInfo.processIdentifier
             let content = try? await CaptureEngine.shared.shareableContent()
-            let ourApp = content?.applications.first { $0.processID == pid }
-            filter = SCContentFilter(
-                display: selection.display,
-                excludingApplications: ourApp.map { [$0] } ?? [],
-                exceptingWindows: [])
+            let overlayNumbers = overlays?.windowNumbers ?? []
+            let keystrokesOn = settings.showKeystrokesInRecording
+                && RecordingOverlays.accessibilityTrusted(prompt: false)
+            if overlayNumbers.isEmpty, !keystrokesOn {
+                // Exclude our whole application, not individual windows: QAO
+                // cards, toasts and pins must never appear in a recording, and
+                // app-level exclusion also covers windows created mid-recording.
+                // (The excludingWindows: [] spelling has a known zero-samples bug
+                // on some macOS builds — this overload is the safe one.)
+                let ourApp = content?.applications.first { $0.processID == pid }
+                filter = SCContentFilter(
+                    display: selection.display,
+                    excludingApplications: ourApp.map { [$0] } ?? [],
+                    exceptingWindows: [])
+            } else {
+                // Overlays must APPEAR in the recording, so exclusion drops to
+                // window level: everything of ours except the overlay panels.
+                // The keystroke HUD is created mid-recording — window-level
+                // exclusion is a fixed list, so later windows are capturable.
+                // Trade-off: a toast fired mid-recording would be captured too
+                // (rare — capture hotkeys are gated while recording).
+                let ours = content?.windows.filter {
+                    $0.owningApplication?.processID == pid
+                        && !overlayNumbers.contains($0.windowID)
+                } ?? []
+                if ours.isEmpty {
+                    // Never pass an empty excludingWindows (zero-samples bug).
+                    filter = SCContentFilter(
+                        display: selection.display,
+                        excludingApplications: [], exceptingWindows: [])
+                } else {
+                    filter = SCContentFilter(display: selection.display, excludingWindows: ours)
+                }
+            }
         }
         let scale = CGFloat(filter.pointPixelScale)
 
@@ -231,6 +275,9 @@ final class RecordingController {
 
         self.stream = stream
         borderView?.colour = .systemRed
+        if settings.showKeystrokesInRecording, selection.window == nil {
+            ensureOverlays()?.startKeystrokes()
+        }
         observeScreenChanges()
     }
 
@@ -297,6 +344,8 @@ final class RecordingController {
             self.screenObserver = nil
         }
         removePanels()
+        overlays?.teardown()
+        overlays = nil
 
         let wasGIF = asGIF
         let url = outputURL
@@ -408,6 +457,13 @@ final class RecordingController {
         strip.onCancel = { [weak self] in self?.cancelConfiguration() }
         strip.onRecord = { [weak self] in self?.beginCountdownAndRecord() }
         strip.onFormatChange = { [weak self] gif in self?.asGIF = gif }
+        strip.onWebcamChange = { [weak self] on in
+            if on {
+                self?.ensureOverlays()?.showWebcam()
+            } else {
+                self?.overlays?.hideWebcam()
+            }
+        }
 
         let size = strip.frame.size
         let display = selection.display.frame
@@ -564,11 +620,14 @@ private final class RecorderControlStrip: NSPanel {
     var onCancel: (() -> Void)?
     var onRecord: (() -> Void)?
     var onFormatChange: ((Bool) -> Void)?
+    var onWebcamChange: ((Bool) -> Void)?
 
     private var format: NSSegmentedControl!
     private var audioToggle: NSButton!
     private var micToggle: NSButton!
     private var cursorToggle: NSButton!
+    private var keysToggle: NSButton!
+    private var webcamToggle: NSButton!
     private var recordButton: NSButton!
     private var cancelButton: NSButton!
 
@@ -602,6 +661,8 @@ private final class RecorderControlStrip: NSPanel {
         audioToggle.isEnabled = enabled
         micToggle.isEnabled = enabled
         cursorToggle.isEnabled = enabled
+        keysToggle.isEnabled = enabled
+        webcamToggle.isEnabled = enabled
         recordButton.isEnabled = enabled
     }
 
@@ -626,6 +687,12 @@ private final class RecorderControlStrip: NSPanel {
         cursorToggle = toggle(
             symbol: "cursorarrow", tip: "Cursor",
             isOn: Settings.shared.showCursorInRecording, action: #selector(cursorToggled(_:)))
+        keysToggle = toggle(
+            symbol: "keyboard", tip: "Show Keystrokes",
+            isOn: Settings.shared.showKeystrokesInRecording, action: #selector(keysToggled(_:)))
+        webcamToggle = toggle(
+            symbol: "video", tip: "Webcam Bubble",
+            isOn: Settings.shared.showWebcamInRecording, action: #selector(webcamToggled(_:)))
 
         cancelButton = NSButton(title: "Cancel", target: self, action: #selector(cancelPressed))
         cancelButton.bezelStyle = .rounded
@@ -640,7 +707,7 @@ private final class RecorderControlStrip: NSPanel {
         let stack = NSStackView(views: [
             sizeLabel, hairline(),
             format, hairline(),
-            audioToggle, micToggle, cursorToggle, hairline(),
+            audioToggle, micToggle, cursorToggle, keysToggle, webcamToggle, hairline(),
             cancelButton, recordButton,
         ])
         stack.orientation = .horizontal
@@ -717,6 +784,17 @@ private final class RecorderControlStrip: NSPanel {
     @objc private func cursorToggled(_ sender: NSButton) {
         Settings.shared.showCursorInRecording = sender.state == .on
         tint(sender)
+    }
+
+    @objc private func keysToggled(_ sender: NSButton) {
+        Settings.shared.showKeystrokesInRecording = sender.state == .on
+        tint(sender)
+    }
+
+    @objc private func webcamToggled(_ sender: NSButton) {
+        Settings.shared.showWebcamInRecording = sender.state == .on
+        tint(sender)
+        onWebcamChange?(sender.state == .on)
     }
 
     @objc private func cancelPressed() {

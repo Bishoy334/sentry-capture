@@ -26,6 +26,8 @@
     <string>NSApplication</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Sentry Capture records your microphone only when you enable it for a screen recording.</string>
+    <key>NSCameraUsageDescription</key>
+    <string>Sentry Capture shows your camera in a webcam bubble only when you enable it for a screen recording.</string>
     <key>CFBundleURLTypes</key>
     <array>
         <dict>

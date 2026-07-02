@@ -27,6 +27,8 @@ final class Settings: ObservableObject {
     @Published var downscaleRetina: Bool
     @Published var showCursorInRecording: Bool
     @Published var showClicksInRecording: Bool
+    @Published var showKeystrokesInRecording: Bool
+    @Published var showWebcamInRecording: Bool
     @Published var recordSystemAudio: Bool
     @Published var recordMicrophone: Bool
     @Published var videoFPS: Int
@@ -78,6 +80,8 @@ final class Settings: ObservableObject {
         downscaleRetina = d.object(forKey: "downscaleRetina") as? Bool ?? false
         showCursorInRecording = d.object(forKey: "showCursorInRecording") as? Bool ?? true
         showClicksInRecording = d.object(forKey: "showClicksInRecording") as? Bool ?? false
+        showKeystrokesInRecording = d.object(forKey: "showKeystrokesInRecording") as? Bool ?? false
+        showWebcamInRecording = d.object(forKey: "showWebcamInRecording") as? Bool ?? false
         recordSystemAudio = d.object(forKey: "recordSystemAudio") as? Bool ?? true
         recordMicrophone = d.object(forKey: "recordMicrophone") as? Bool ?? false
         videoFPS = d.object(forKey: "videoFPS") as? Int ?? 60
@@ -125,6 +129,8 @@ final class Settings: ObservableObject {
         d.set(downscaleRetina, forKey: "downscaleRetina")
         d.set(showCursorInRecording, forKey: "showCursorInRecording")
         d.set(showClicksInRecording, forKey: "showClicksInRecording")
+        d.set(showKeystrokesInRecording, forKey: "showKeystrokesInRecording")
+        d.set(showWebcamInRecording, forKey: "showWebcamInRecording")
         d.set(recordSystemAudio, forKey: "recordSystemAudio")
         d.set(recordMicrophone, forKey: "recordMicrophone")
         d.set(videoFPS, forKey: "videoFPS")
