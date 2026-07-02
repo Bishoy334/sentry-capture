@@ -439,6 +439,26 @@ private final class QAOCardView: NSView, NSDraggingSource {
             add("Pin", #selector(pinAction))
             add("Copy Text", #selector(copyTextAction))
         }
+        if let recordID = item.recordID {
+            let destinations = SentryRegistry.destinations()
+            if !destinations.isEmpty {
+                menu.addItem(.separator())
+                let sendItem = NSMenuItem(title: "Send to", action: nil, keyEquivalent: "")
+                let submenu = NSMenu()
+                for destination in destinations {
+                    let entry = NSMenuItem(
+                        title: destination.name, action: #selector(sendToAction(_:)), keyEquivalent: "")
+                    entry.target = self
+                    entry.representedObject = SendPayload(recordID: recordID, destination: destination)
+                    if let symbol = destination.symbol {
+                        entry.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+                    }
+                    submenu.addItem(entry)
+                }
+                sendItem.submenu = submenu
+                menu.addItem(sendItem)
+            }
+        }
         menu.addItem(.separator())
         if item.fileURL != nil {
             add("Move to Bin", #selector(trashAction))
@@ -464,8 +484,9 @@ private final class QAOCardView: NSView, NSDraggingSource {
         if let url = item.fileURL {
             NSWorkspace.shared.activateFileViewerSelecting([url])
         } else if case .still(let still) = item.payload {
-            guard let url = OutputRouter.shared.reExport(still) else { return }
-            item.fileURL = url
+            guard let result = OutputRouter.shared.reExport(still) else { return }
+            item.fileURL = result.url
+            item.recordID = result.recordID
             saveButton?.setSymbol("magnifyingglass", tooltip: "Reveal in Finder")
             Toast.show("Saved", symbol: "arrow.down.circle")
         }
@@ -502,6 +523,22 @@ private final class QAOCardView: NSView, NSDraggingSource {
 
     @objc private func closeAction() {
         onDismiss?()
+    }
+
+    @objc private func sendToAction(_ sender: NSMenuItem) {
+        guard let payload = sender.representedObject as? SendPayload else { return }
+        SentryRegistry.send(recordID: payload.recordID, to: payload.destination)
+        onDismiss?()
+    }
+}
+
+/// NSMenuItem.representedObject needs a class.
+private final class SendPayload {
+    let recordID: String
+    let destination: SentryDestination
+    init(recordID: String, destination: SentryDestination) {
+        self.recordID = recordID
+        self.destination = destination
     }
 }
 

@@ -7,7 +7,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let menu = NSMenu()
     private var recordingTimer: Timer?
 
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            SentryRegistry.handle(url)
+        }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        SentryRegistry.advertiseSelf()
         installMainMenu()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         updateStatusIcon()

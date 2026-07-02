@@ -43,7 +43,8 @@ final class OutputRouter {
                 mimeType: format.mimeType
             ) {
                 still.recordID = record.id
-                delivered = DeliveredCapture(payload: .still(still), fileURL: record.mediaURL)
+                delivered = DeliveredCapture(
+                    payload: .still(still), fileURL: record.mediaURL, recordID: record.id)
                 addRecent(record.mediaURL)
             }
         }
@@ -67,6 +68,7 @@ final class OutputRouter {
             durationSeconds: video.durationSeconds
         ) {
             delivered.fileURL = record.mediaURL
+            delivered.recordID = record.id
             addRecent(record.mediaURL)
         } else {
             // Store already toasted; leave the temp file reachable.
@@ -86,12 +88,16 @@ final class OutputRouter {
     /// (and the integration surface sees one evolving record, not forks).
     /// Creates a record when the capture never persisted in the first place.
     @discardableResult
-    func reExport(_ still: StillCapture, annotationCount: Int? = nil) -> URL? {
+    func reExport(
+        _ still: StillCapture, annotationCount: Int? = nil
+    ) -> (url: URL, recordID: String)? {
         if let id = still.recordID, let manifest = SentryStore.shared.loadManifest(for: id) {
             let format: ImageFormat = manifest.media.type == "image/jpeg" ? .jpg : .png
-            guard let data = encode(still, format: format) else { return nil }
-            return SentryStore.shared.updateStillMedia(
-                recordID: id, still: still, data: data, annotationCount: annotationCount)
+            guard let data = encode(still, format: format),
+                  let url = SentryStore.shared.updateStillMedia(
+                      recordID: id, still: still, data: data, annotationCount: annotationCount)
+            else { return nil }
+            return (url, id)
         }
         let format = Settings.shared.imageFormat
         guard let data = encode(still, format: format) else { return nil }
@@ -101,7 +107,7 @@ final class OutputRouter {
             mimeType: format.mimeType
         ) else { return nil }
         addRecent(record.mediaURL)
-        return record.mediaURL
+        return (record.mediaURL, record.id)
     }
 
     // MARK: Clipboard

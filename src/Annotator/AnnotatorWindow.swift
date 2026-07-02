@@ -247,7 +247,10 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         stack.insertArrangedSubview(background, at: 1)
         backgroundButton = background
 
-        // Primary actions live top-right: pin, copy, save.
+        // Primary actions live top-right: send, pin, copy, save.
+        let send = toolbarIconButton(
+            symbol: "paperplane", tooltip: "Send to Sentry app",
+            action: #selector(sendToTapped(_:)))
         let pin = toolbarIconButton(
             symbol: "pin", tooltip: "Pin to Screen", action: #selector(pinTapped))
         let copy = toolbarIconButton(
@@ -255,7 +258,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         let save = toolbarIconButton(
             symbol: "square.and.arrow.down", tooltip: "Save (⌘S)", action: #selector(saveTapped))
         save.contentTintColor = .controlAccentColor
-        let actions = NSStackView(views: [pin, copy, save])
+        let actions = NSStackView(views: [send, pin, copy, save])
         actions.orientation = .horizontal
         actions.spacing = 2
         actions.translatesAutoresizingMaskIntoConstraints = false
@@ -633,6 +636,36 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
 
     @objc private func toolTapped(_ sender: NSButton) {
         selectTool(AnnotatorTool.allCases[sender.tag])
+    }
+
+    @objc private func sendToTapped(_ sender: NSButton) {
+        let destinations = SentryRegistry.destinations()
+        guard !destinations.isEmpty else {
+            Toast.show("No Sentry apps registered yet", symbol: "paperplane")
+            return
+        }
+        let menu = NSMenu()
+        for (i, destination) in destinations.enumerated() {
+            let entry = NSMenuItem(
+                title: destination.name, action: #selector(sendToDestination(_:)), keyEquivalent: "")
+            entry.target = self
+            entry.tag = i
+            if let symbol = destination.symbol {
+                entry.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+            }
+            menu.addItem(entry)
+        }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.maxY + 4), in: sender)
+    }
+
+    @objc private func sendToDestination(_ sender: NSMenuItem) {
+        let destinations = SentryRegistry.destinations()
+        guard destinations.indices.contains(sender.tag) else { return }
+        // Save first so the receiver reads the current edit, not a stale record.
+        guard let still = exportStill(),
+              let result = OutputRouter.shared.reExport(
+                  still, annotationCount: canvas.annotations.count) else { return }
+        SentryRegistry.send(recordID: result.recordID, to: destinations[sender.tag])
     }
 
     @objc private func pinTapped() {

@@ -26,5 +26,16 @@
     <string>NSApplication</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Sentry Capture records your microphone only when you enable it for a screen recording.</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>com.bishoy.sentry.capture</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>sentry-capture</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>

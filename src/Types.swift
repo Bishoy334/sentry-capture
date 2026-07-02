@@ -64,6 +64,8 @@ struct DeliveredCapture {
     }
     let payload: Payload
     var fileURL: URL?
+    /// The Sentry record backing this capture — Send to… and re-editing key off it.
+    var recordID: String?
 }
 
 /// Every rect that crosses a module boundary is in GLOBAL CoreGraphics
