@@ -79,7 +79,9 @@ final class RecordingOverlays {
 
     func startKeystrokes() {
         guard keyMonitor == nil, Self.accessibilityTrusted(prompt: false) else { return }
-        keyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        keyMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.keyDown, .flagsChanged]
+        ) { [weak self] event in
             MainActor.assumeIsolated { self?.handleKey(event) }
         }
     }
@@ -88,31 +90,44 @@ final class RecordingOverlays {
         if keystrokePanel == nil {
             keystrokePanel = KeystrokeHUDPanel(in: rect)
         }
-        keystrokePanel?.show(event)
+        if event.type == .flagsChanged {
+            keystrokePanel?.showModifiers(event.modifierFlags)
+        } else {
+            keystrokePanel?.show(event)
+        }
     }
 }
 
 // MARK: - Webcam bubble panel
 
 /// Circular live camera preview, bottom-right of the recorded rect, draggable
-/// anywhere. Deliberately clickable (not click-through) so it can be moved.
+/// anywhere. Deliberately clickable (not click-through) so it can be moved
+/// and resized (right-click).
 @MainActor
 private final class WebcamBubblePanel: NSPanel {
-    private static let side: CGFloat = 160
+    static func side(for name: String) -> CGFloat {
+        switch name {
+        case "small": return 120
+        case "large": return 220
+        default: return 160
+        }
+    }
 
     private let session = AVCaptureSession()
     private let sessionQueue = DispatchQueue(label: "webcam-bubble", qos: .userInitiated)
+    private var preview: AVCaptureVideoPreviewLayer?
 
     init?(in rect: CGRect) {
         guard let device = AVCaptureDevice.default(for: .video),
               let input = try? AVCaptureDeviceInput(device: device) else { return nil }
 
+        let side = Self.side(for: Settings.shared.webcamBubbleSize)
         let inset: CGFloat = 16
         let cgOrigin = CGPoint(
-            x: rect.maxX - Self.side - inset,
-            y: rect.maxY - Self.side - inset)
+            x: rect.maxX - side - inset,
+            y: rect.maxY - side - inset)
         let frame = Coords.appKitRect(
-            fromCG: CGRect(origin: cgOrigin, size: CGSize(width: Self.side, height: Self.side)))
+            fromCG: CGRect(origin: cgOrigin, size: CGSize(width: side, height: side)))
         super.init(
             contentRect: frame,
             styleMask: [.borderless, .nonactivatingPanel],
@@ -130,12 +145,13 @@ private final class WebcamBubblePanel: NSPanel {
         session.sessionPreset = .medium
         session.addInput(input)
 
-        let content = NSView(frame: NSRect(origin: .zero, size: frame.size))
+        let content = WebcamContentView(frame: NSRect(origin: .zero, size: frame.size))
+        content.autoresizesSubviews = false
         content.wantsLayer = true
         let preview = AVCaptureVideoPreviewLayer(session: session)
         preview.frame = content.bounds
         preview.videoGravity = .resizeAspectFill
-        preview.cornerRadius = Self.side / 2
+        preview.cornerRadius = side / 2
         preview.masksToBounds = true
         preview.borderWidth = 2
         preview.borderColor = NSColor.white.withAlphaComponent(0.85).cgColor
@@ -145,6 +161,7 @@ private final class WebcamBubblePanel: NSPanel {
             connection.isVideoMirrored = true
         }
         content.layer?.addSublayer(preview)
+        self.preview = preview
         contentView = content
 
         // startRunning blocks for camera spin-up — never on main.
@@ -155,6 +172,46 @@ private final class WebcamBubblePanel: NSPanel {
     func stop() {
         let session = self.session
         sessionQueue.async { session.stopRunning() }
+    }
+
+    /// Resize about the bubble's centre; the preview layer follows manually
+    /// (sublayers don't autoresize).
+    fileprivate func setSize(_ name: String) {
+        Settings.shared.webcamBubbleSize = name
+        let side = Self.side(for: name)
+        let centre = NSPoint(x: frame.midX, y: frame.midY)
+        setFrame(
+            NSRect(x: centre.x - side / 2, y: centre.y - side / 2, width: side, height: side),
+            display: true)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        preview?.frame = contentView?.bounds ?? .zero
+        preview?.cornerRadius = side / 2
+        CATransaction.commit()
+    }
+}
+
+/// Right-click menu: bubble size.
+@MainActor
+private final class WebcamContentView: NSView {
+    override var mouseDownCanMoveWindow: Bool { true }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func rightMouseDown(with event: NSEvent) {
+        let menu = NSMenu()
+        for (title, name) in [("Small", "small"), ("Medium", "medium"), ("Large", "large")] {
+            let item = NSMenuItem(title: title, action: #selector(sizeTapped(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = name
+            item.state = Settings.shared.webcamBubbleSize == name ? .on : .off
+            menu.addItem(item)
+        }
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
+
+    @objc private func sizeTapped(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String else { return }
+        (window as? WebcamBubblePanel)?.setSize(name)
     }
 }
 
@@ -218,7 +275,18 @@ private final class KeystrokeHUDPanel: NSPanel {
             buffer = Hotkey.keyName(for: UInt32(event.keyCode))
             bufferIsTyping = false
         }
-        render()
+        display(buffer)
+    }
+
+    /// Modifiers held on their own show as a transient chip (viewers track
+    /// "now hold ⌘…" in tutorials); releasing them restores the typed buffer.
+    func showModifiers(_ flags: NSEvent.ModifierFlags) {
+        let mods = flags.intersection([.command, .control, .option, .shift])
+        if mods.isEmpty {
+            display(buffer)
+        } else {
+            display(glyphs(mods))
+        }
     }
 
     /// Characters worth accumulating as typed text; nil sends the key down
@@ -242,8 +310,13 @@ private final class KeystrokeHUDPanel: NSPanel {
         return s
     }
 
-    private func render() {
-        label.stringValue = buffer
+    private func display(_ text: String) {
+        if text.isEmpty {
+            fadeTask?.cancel()
+            fadeOutNow()
+            return
+        }
+        label.stringValue = text
         let width = label.intrinsicContentSize.width + 28
         let size = CGSize(width: max(width, 44), height: 34)
         setFrame(

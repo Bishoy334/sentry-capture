@@ -31,6 +31,7 @@ rm -rf "${APP_DIR}"
 mkdir -p "${APP_DIR}/Contents/MacOS" "${APP_DIR}/Contents/Resources"
 cp "${SCRIPT_DIR}/${BIN_NAME}" "${APP_DIR}/Contents/MacOS/${BIN_NAME}"
 cp "${SCRIPT_DIR}/Info.plist" "${APP_DIR}/Contents/Info.plist"
+cp "${SCRIPT_DIR}/assets/AppIcon.icns" "${APP_DIR}/Contents/Resources/AppIcon.icns"
 rm "${SCRIPT_DIR}/${BIN_NAME}"
 
 # TCC ties the Screen Recording grant to the code signature — ad-hoc signing

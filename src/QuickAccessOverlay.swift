@@ -89,16 +89,26 @@ final class QuickAccessOverlay {
         }
     }
 
-    /// Stack per screen: newest at the corner, older cards pushed up.
+    fileprivate func expand(_ panel: QAOCardPanel) {
+        panel.userExpanded = true
+        layout(entering: nil)
+    }
+
+    /// Stack per screen: newest at the corner, older cards pushed up. Beyond
+    /// the newest three, cards collapse to their caption band so a burst of
+    /// captures doesn't wall off the screen edge — click one to reopen it.
     private func layout(entering: QAOCardPanel?) {
         var cursors: [CGDirectDisplayID: CGFloat] = [:]
         var targets: [(QAOCardPanel, NSRect)] = []
         let rightCorner = Settings.shared.qaoCorner == "bottomRight"
-        for panel in cards {
+        for (index, panel) in cards.enumerated() {
             guard let screen = panel.homeScreen else { continue }
+            panel.isCollapsed = index >= 3 && !panel.userExpanded
             let visible = screen.visibleFrame
             let y = cursors[screen.displayID] ?? (visible.minY + Self.margin)
-            let size = panel.frame.size
+            let size = panel.isCollapsed
+                ? NSSize(width: panel.fullSize.width, height: QAOCardPanel.collapsedHeight)
+                : panel.fullSize
             let x = rightCorner
                 ? visible.maxX - Self.margin - size.width
                 : visible.minX + Self.margin
@@ -183,7 +193,15 @@ private struct QAOVideoMeta {
 
 @MainActor
 private final class QAOCardPanel: NSPanel {
+    /// Caption band + border — what a collapsed card shows.
+    static let collapsedHeight: CGFloat = 24
+
     let cardView: QAOCardView
+    let fullSize: NSSize
+    /// Collapsed cards clip to their caption; a click re-expands (the window
+    /// clips content to its frame, so no view surgery is needed).
+    var isCollapsed = false
+    var userExpanded = false
     private let homeDisplayID: CGDirectDisplayID
 
     var homeScreen: NSScreen? {
@@ -192,6 +210,7 @@ private final class QAOCardPanel: NSPanel {
 
     init(item: DeliveredCapture, thumbnail: NSImage?, video: QAOVideoMeta?, screen: NSScreen) {
         cardView = QAOCardView(item: item, thumbnail: thumbnail, video: video)
+        fullSize = cardView.frame.size
         homeDisplayID = screen.displayID
         super.init(
             contentRect: NSRect(origin: .zero, size: cardView.frame.size),
@@ -438,6 +457,10 @@ private final class QAOCardView: NSView, NSDraggingSource {
     override func mouseUp(with event: NSEvent) {
         defer { mouseDownEvent = nil }
         guard mouseDownEvent != nil, !didDrag else { return }
+        if let panel = window as? QAOCardPanel, panel.isCollapsed {
+            QuickAccessOverlay.shared.expand(panel)
+            return
+        }
         switch item.payload {
         case .still(let still):
             OutputRouter.shared.openAnnotator(still)

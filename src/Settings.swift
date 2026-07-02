@@ -29,6 +29,8 @@ final class Settings: ObservableObject {
     @Published var showClicksInRecording: Bool
     @Published var showKeystrokesInRecording: Bool
     @Published var showWebcamInRecording: Bool
+    /// small | medium | large — bubble diameter in the recording.
+    @Published var webcamBubbleSize: String
     @Published var recordSystemAudio: Bool
     @Published var recordMicrophone: Bool
     @Published var videoFPS: Int
@@ -82,6 +84,7 @@ final class Settings: ObservableObject {
         showClicksInRecording = d.object(forKey: "showClicksInRecording") as? Bool ?? false
         showKeystrokesInRecording = d.object(forKey: "showKeystrokesInRecording") as? Bool ?? false
         showWebcamInRecording = d.object(forKey: "showWebcamInRecording") as? Bool ?? false
+        webcamBubbleSize = d.string(forKey: "webcamBubbleSize") ?? "medium"
         recordSystemAudio = d.object(forKey: "recordSystemAudio") as? Bool ?? true
         recordMicrophone = d.object(forKey: "recordMicrophone") as? Bool ?? false
         videoFPS = d.object(forKey: "videoFPS") as? Int ?? 60
@@ -131,6 +134,7 @@ final class Settings: ObservableObject {
         d.set(showClicksInRecording, forKey: "showClicksInRecording")
         d.set(showKeystrokesInRecording, forKey: "showKeystrokesInRecording")
         d.set(showWebcamInRecording, forKey: "showWebcamInRecording")
+        d.set(webcamBubbleSize, forKey: "webcamBubbleSize")
         d.set(recordSystemAudio, forKey: "recordSystemAudio")
         d.set(recordMicrophone, forKey: "recordMicrophone")
         d.set(videoFPS, forKey: "videoFPS")
