@@ -119,6 +119,69 @@ enum AnnotatorKind: String, Equatable, Codable {
     case arrow, line, rect, filledRect, ellipse, freehand, highlighter, text, counter, redact, spotlight
 }
 
+/// The "make it pretty" wrapper: padded, rounded, shadowed capture on a
+/// solid/gradient backdrop. Non-destructive — applied at export, previewed
+/// live by the backdrop view.
+struct AnnotatorBackgroundStyle: Equatable {
+    enum Fill: Equatable {
+        case none
+        case solid(NSColor)
+        case gradient(Int)
+    }
+
+    var fill: Fill = .none
+    var padding: CGFloat = 48
+    var cornerRadius: CGFloat = 12
+    var shadow: Bool = true
+
+    var isVisible: Bool { fill != .none }
+
+    static let gradientPresets: [(name: String, colours: [NSColor])] = [
+        ("Dusk", [NSColor(srgbRed: 0.35, green: 0.22, blue: 0.58, alpha: 1),
+                  NSColor(srgbRed: 0.86, green: 0.34, blue: 0.44, alpha: 1)]),
+        ("Ocean", [NSColor(srgbRed: 0.10, green: 0.35, blue: 0.62, alpha: 1),
+                   NSColor(srgbRed: 0.22, green: 0.74, blue: 0.76, alpha: 1)]),
+        ("Meadow", [NSColor(srgbRed: 0.13, green: 0.48, blue: 0.35, alpha: 1),
+                    NSColor(srgbRed: 0.72, green: 0.86, blue: 0.42, alpha: 1)]),
+        ("Ember", [NSColor(srgbRed: 0.85, green: 0.42, blue: 0.16, alpha: 1),
+                   NSColor(srgbRed: 0.96, green: 0.76, blue: 0.32, alpha: 1)]),
+        ("Slate", [NSColor(srgbRed: 0.16, green: 0.18, blue: 0.24, alpha: 1),
+                   NSColor(srgbRed: 0.42, green: 0.46, blue: 0.56, alpha: 1)]),
+    ]
+
+    static let solidPresets: [(name: String, colour: NSColor)] = [
+        ("White", .white),
+        ("Charcoal", NSColor(srgbRed: 0.13, green: 0.13, blue: 0.15, alpha: 1)),
+    ]
+
+    /// Draw the fill into a rect — shared by the live backdrop preview and
+    /// the export compositor.
+    func drawFill(in rect: CGRect, ctx: CGContext) {
+        switch fill {
+        case .none:
+            break
+        case .solid(let colour):
+            ctx.setFillColor(colour.cgColor)
+            ctx.fill(rect)
+        case .gradient(let index):
+            let preset = Self.gradientPresets[
+                min(max(index, 0), Self.gradientPresets.count - 1)]
+            let colours = preset.colours.map(\.cgColor) as CFArray
+            guard let gradient = CGGradient(
+                colorsSpace: CGColorSpace(name: CGColorSpace.sRGB),
+                colors: colours, locations: [0, 1]) else { return }
+            ctx.saveGState()
+            ctx.clip(to: rect)
+            ctx.drawLinearGradient(
+                gradient,
+                start: CGPoint(x: rect.minX, y: rect.minY),
+                end: CGPoint(x: rect.maxX, y: rect.maxY),
+                options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+            ctx.restoreGState()
+        }
+    }
+}
+
 /// One annotation, in IMAGE POINT coordinates (top-left origin). Which fields
 /// are meaningful depends on `kind`; one flat value type keeps undo snapshots
 /// and Equatable comparison free.
@@ -604,6 +667,57 @@ enum AnnotatorRender {
             draw(a, in: ctx, canvasHeight: pointH, redactPatch: nil)
         }
         NSGraphicsContext.restoreGraphicsState()
+        return ctx.makeImage()
+    }
+}
+
+// MARK: - Background export
+
+extension AnnotatorRender {
+    /// Wrap a flattened export in its background: padding, fill, shadow, and
+    /// rounded corners — all in pixels, mirroring the live backdrop preview.
+    static func applyBackground(
+        _ style: AnnotatorBackgroundStyle, to image: CGImage, scale: CGFloat
+    ) -> CGImage? {
+        guard style.isVisible else { return image }
+        let pad = style.padding * scale
+        let width = Int(CGFloat(image.width) + pad * 2)
+        let height = Int(CGFloat(image.height) + pad * 2)
+        guard let ctx = CGContext(
+            data: nil, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                | CGBitmapInfo.byteOrder32Little.rawValue
+        ) else { return nil }
+
+        style.drawFill(in: CGRect(x: 0, y: 0, width: width, height: height), ctx: ctx)
+
+        let imageRect = CGRect(
+            x: pad, y: pad, width: CGFloat(image.width), height: CGFloat(image.height))
+        let radius = min(style.cornerRadius * scale, imageRect.width / 2, imageRect.height / 2)
+        let rounded = CGPath(
+            roundedRect: imageRect, cornerWidth: radius, cornerHeight: radius, transform: nil)
+
+        if style.shadow {
+            // The shadow is cast by a solid stand-in; the image then draws
+            // clipped on top (a clipped draw casts no shadow of its own).
+            ctx.saveGState()
+            ctx.setShadow(
+                offset: CGSize(width: 0, height: -pad * 0.12),
+                blur: max(18 * scale, pad * 0.35),
+                color: NSColor.black.withAlphaComponent(0.4).cgColor)
+            ctx.addPath(rounded)
+            ctx.setFillColor(NSColor.black.cgColor)
+            ctx.fillPath()
+            ctx.restoreGState()
+        }
+
+        ctx.saveGState()
+        ctx.addPath(rounded)
+        ctx.clip()
+        ctx.draw(image, in: imageRect)
+        ctx.restoreGState()
         return ctx.makeImage()
     }
 }

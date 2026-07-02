@@ -72,6 +72,15 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     private var toolButtons: [(tool: AnnotatorTool, button: NSButton)] = []
     private let optionsStack = NSStackView()
     private let dimensionsLabel = NSTextField(labelWithString: "")
+    private let backdrop = AnnotatorBackdropView()
+    private var backgroundButton: NSButton?
+    private var backgroundBarActive = false
+    private var backgroundStyle = AnnotatorBackgroundStyle() {
+        didSet {
+            layoutBackdrop()
+            refreshChrome()
+        }
+    }
 
     /// Toolbar layout: capture-level, shapes, emphasis, ink, then select.
     /// nil entries render as group separators.
@@ -119,7 +128,10 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         window.contentView = buildContent()
 
         canvas.onStateChange = { [weak self] in self?.refreshChrome() }
-        canvas.onImageChanged = { [weak self] in self?.refreshImageMeta() }
+        canvas.onImageChanged = { [weak self] in
+            self?.refreshImageMeta()
+            self?.layoutBackdrop()
+        }
 
         sizeWindowToImage()
         refreshImageMeta()
@@ -152,7 +164,9 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         let optionsBar = buildOptionsBar()
         let footer = buildFooter()
 
-        scrollView.documentView = canvas
+        backdrop.addSubview(canvas)
+        scrollView.documentView = backdrop
+        layoutBackdrop()
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = true
         scrollView.allowsMagnification = true
@@ -224,6 +238,14 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
                 toolButtons.append((tool, button))
             }
         }
+
+        // Background mode is chrome-level, not a canvas tool — its button
+        // lives beside crop but toggles the options bar instead of the tool.
+        let background = toolbarIconButton(
+            symbol: "photo.on.rectangle", tooltip: "Background (B)",
+            action: #selector(backgroundTapped))
+        stack.insertArrangedSubview(background, at: 1)
+        backgroundButton = background
 
         // Primary actions live top-right: pin, copy, save.
         let pin = toolbarIconButton(
@@ -360,7 +382,102 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             button.layer?.backgroundColor = selected ? NSColor.controlAccentColor.cgColor : nil
             button.contentTintColor = selected ? .white : .secondaryLabelColor
         }
+        if let backgroundButton {
+            let active = backgroundBarActive || backgroundStyle.isVisible
+            backgroundButton.layer?.backgroundColor =
+                backgroundBarActive ? NSColor.controlAccentColor.cgColor : nil
+            backgroundButton.contentTintColor = backgroundBarActive
+                ? .white
+                : (active ? .controlAccentColor : .secondaryLabelColor)
+        }
         rebuildOptionsBar()
+    }
+
+    private func layoutBackdrop() {
+        let pt = canvas.pointSize
+        let pad = backgroundStyle.isVisible ? backgroundStyle.padding : 0
+        backdrop.style = backgroundStyle
+        backdrop.setFrameSize(NSSize(width: pt.width + pad * 2, height: pt.height + pad * 2))
+        canvas.setFrameOrigin(NSPoint(x: pad, y: pad))
+        canvas.setFrameSize(pt)
+        // The preview rounds the live image the same way the export will.
+        canvas.layer?.cornerRadius = backgroundStyle.isVisible ? backgroundStyle.cornerRadius : 0
+        canvas.layer?.masksToBounds = backgroundStyle.isVisible
+        backdrop.needsDisplay = true
+    }
+
+    private func rebuildBackgroundBar() {
+        func fillSwatch(_ tag: Int, tooltip: String) -> NSButton {
+            let button = NSButton()
+            button.title = ""
+            button.isBordered = false
+            button.setButtonType(.momentaryChange)
+            button.toolTip = tooltip
+            button.wantsLayer = true
+            button.layer?.cornerRadius = 8
+            button.layer?.borderWidth = 1
+            button.layer?.borderColor = NSColor.separatorColor.cgColor
+            button.tag = tag
+            button.target = self
+            button.action = #selector(backgroundFillTapped(_:))
+            button.translatesAutoresizingMaskIntoConstraints = false
+            button.widthAnchor.constraint(equalToConstant: 16).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 16).isActive = true
+            return button
+        }
+
+        // Tags: 0 none, 1... solids, 100... gradients.
+        let none = fillSwatch(0, tooltip: "No background")
+        none.image = NSImage(
+            systemSymbolName: "slash.circle", accessibilityDescription: "No background")
+        none.contentTintColor = .secondaryLabelColor
+        optionsStack.addArrangedSubview(none)
+        for (i, preset) in AnnotatorBackgroundStyle.solidPresets.enumerated() {
+            let swatch = fillSwatch(1 + i, tooltip: preset.name)
+            swatch.layer?.backgroundColor = preset.colour.cgColor
+            optionsStack.addArrangedSubview(swatch)
+        }
+        for (i, preset) in AnnotatorBackgroundStyle.gradientPresets.enumerated() {
+            let swatch = fillSwatch(100 + i, tooltip: preset.name)
+            let gradient = CAGradientLayer()
+            gradient.frame = CGRect(x: 0, y: 0, width: 16, height: 16)
+            gradient.cornerRadius = 8
+            gradient.colors = preset.colours.map(\.cgColor)
+            gradient.startPoint = CGPoint(x: 0, y: 1)
+            gradient.endPoint = CGPoint(x: 1, y: 0)
+            swatch.layer?.addSublayer(gradient)
+            optionsStack.addArrangedSubview(swatch)
+        }
+
+        let paddingLabel = NSTextField(labelWithString: "Padding")
+        paddingLabel.font = .systemFont(ofSize: 11)
+        paddingLabel.textColor = .secondaryLabelColor
+        let padding = NSSlider(
+            value: backgroundStyle.padding, minValue: 16, maxValue: 140,
+            target: self, action: #selector(backgroundPaddingChanged(_:)))
+        padding.controlSize = .small
+        padding.translatesAutoresizingMaskIntoConstraints = false
+        padding.widthAnchor.constraint(equalToConstant: 90).isActive = true
+
+        let radiusLabel = NSTextField(labelWithString: "Corners")
+        radiusLabel.font = .systemFont(ofSize: 11)
+        radiusLabel.textColor = .secondaryLabelColor
+        let radius = NSSlider(
+            value: backgroundStyle.cornerRadius, minValue: 0, maxValue: 28,
+            target: self, action: #selector(backgroundRadiusChanged(_:)))
+        radius.controlSize = .small
+        radius.translatesAutoresizingMaskIntoConstraints = false
+        radius.widthAnchor.constraint(equalToConstant: 70).isActive = true
+
+        let shadow = NSButton(
+            checkboxWithTitle: "Shadow", target: self,
+            action: #selector(backgroundShadowChanged(_:)))
+        shadow.controlSize = .small
+        shadow.state = backgroundStyle.shadow ? .on : .off
+
+        for view in [paddingLabel, padding, radiusLabel, radius, shadow] {
+            optionsStack.addArrangedSubview(view)
+        }
     }
 
     // MARK: Options bar contents
@@ -368,6 +485,10 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     private func rebuildOptionsBar() {
         for view in optionsStack.arrangedSubviews {
             view.removeFromSuperview()
+        }
+        if backgroundBarActive, !canvas.cropActive {
+            rebuildBackgroundBar()
+            return
         }
         if canvas.cropActive {
             let aspect = NSSegmentedControl(
@@ -570,6 +691,38 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         }
     }
 
+    @objc private func backgroundTapped() {
+        backgroundBarActive.toggle()
+        if backgroundBarActive, !backgroundStyle.isVisible {
+            backgroundStyle.fill = .gradient(0)
+        }
+        refreshChrome()
+    }
+
+    @objc private func backgroundFillTapped(_ sender: NSButton) {
+        switch sender.tag {
+        case 0:
+            backgroundStyle.fill = .none
+        case 1..<100:
+            backgroundStyle.fill = .solid(
+                AnnotatorBackgroundStyle.solidPresets[sender.tag - 1].colour)
+        default:
+            backgroundStyle.fill = .gradient(sender.tag - 100)
+        }
+    }
+
+    @objc private func backgroundPaddingChanged(_ sender: NSSlider) {
+        backgroundStyle.padding = CGFloat(sender.doubleValue)
+    }
+
+    @objc private func backgroundRadiusChanged(_ sender: NSSlider) {
+        backgroundStyle.cornerRadius = CGFloat(sender.doubleValue)
+    }
+
+    @objc private func backgroundShadowChanged(_ sender: NSButton) {
+        backgroundStyle.shadow = sender.state == .on
+    }
+
     @objc private func cropAspectChanged(_ sender: NSSegmentedControl) {
         canvas.cropAspect = Self.cropAspects[sender.selectedSegment].ratio
         window.makeFirstResponder(canvas)
@@ -591,8 +744,10 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             Toast.show("Could not flatten image", symbol: "exclamationmark.triangle")
             return nil
         }
+        let final = AnnotatorRender.applyBackground(
+            backgroundStyle, to: flattened, scale: canvas.imageScale) ?? flattened
         return StillCapture(
-            image: flattened, scale: canvas.imageScale, source: source,
+            image: final, scale: canvas.imageScale, source: source,
             screenRect: nil, origin: origin, recordID: recordID)
     }
 
@@ -691,6 +846,10 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         guard flags.isDisjoint(with: [.command, .option, .control]),
               let ch = event.charactersIgnoringModifiers?.lowercased(), ch.count == 1
         else { return false }
+        if ch == "b" {
+            backgroundTapped()
+            return true
+        }
         if let tool = AnnotatorTool.allCases.first(where: { $0.key == ch }) {
             selectTool(tool)
             return true
@@ -709,5 +868,35 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         let visible = scrollView.contentView.bounds
         scrollView.setMagnification(
             clamped, centeredAt: NSPoint(x: visible.midX, y: visible.midY))
+    }
+}
+
+// MARK: - Backdrop
+
+/// Live preview of the background style: fills its bounds and casts the
+/// shadow behind the canvas subview; the canvas's layer corner radius rounds
+/// the image itself. Export mirrors this via AnnotatorRender.applyBackground.
+private final class AnnotatorBackdropView: NSView {
+    var style = AnnotatorBackgroundStyle() {
+        didSet { needsDisplay = true }
+    }
+
+    override var isFlipped: Bool { true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard style.isVisible, let ctx = NSGraphicsContext.current?.cgContext else { return }
+        style.drawFill(in: bounds, ctx: ctx)
+        guard style.shadow, let canvas = subviews.first else { return }
+        let radius = min(style.cornerRadius, canvas.frame.width / 2, canvas.frame.height / 2)
+        ctx.saveGState()
+        ctx.setShadow(
+            offset: CGSize(width: 0, height: style.padding * 0.12),
+            blur: max(18, style.padding * 0.35),
+            color: NSColor.black.withAlphaComponent(0.4).cgColor)
+        ctx.addPath(CGPath(
+            roundedRect: canvas.frame, cornerWidth: radius, cornerHeight: radius, transform: nil))
+        ctx.setFillColor(NSColor.black.cgColor)
+        ctx.fillPath()
+        ctx.restoreGState()
     }
 }
