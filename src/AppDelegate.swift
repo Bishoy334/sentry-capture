@@ -133,6 +133,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // overlay, not the page).
         guard !ScrollingCaptureController.shared.isActive else { return }
         guard !SelectionController.shared.isActive else { return }
+        guard !ColourPickerController.shared.isActive else { return }
         guard CaptureEngine.shared.hasPermission else {
             CaptureEngine.shared.requestPermission()
             return
@@ -218,6 +219,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         OutputRouter.shared.deliver(still)
                     }
                 }
+            }
+        case .colourPicker:
+            ColourPickerController.shared.begin()
+        case .checkContrast:
+            ColourPickerController.shared.begin(contrastMode: true)
+        case .measure:
+            SelectionController.shared.begin(mode: .measure) { selection in
+                guard let selection else { return }
+                let scale = selection.frozen?.scale
+                    ?? CGFloat(NSScreen.screens.first {
+                        $0.displayID == selection.display.displayID
+                    }?.backingScaleFactor ?? 2)
+                let px = "\(Int(selection.rect.width * scale)) × \(Int(selection.rect.height * scale)) px"
+                let pt = "\(Int(selection.rect.width)) × \(Int(selection.rect.height)) pt"
+                let pb = NSPasteboard.general
+                pb.clearContents()
+                pb.setString(px, forType: .string)
+                Toast.show("\(px)  (\(pt)) — copied", symbol: "ruler", duration: 2.6)
             }
         case .pinArea:
             SelectionController.shared.begin(mode: .pin) { selection in
@@ -315,6 +334,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         menu.addItem(.separator())
         for action in [HotkeyAction.copyText, .pinArea] {
+            menu.addItem(actionItem(action))
+        }
+        menu.addItem(.separator())
+        for action in [HotkeyAction.colourPicker, .measure, .checkContrast] {
             menu.addItem(actionItem(action))
         }
         menu.addItem(.separator())

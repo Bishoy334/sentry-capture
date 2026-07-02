@@ -10,7 +10,7 @@ import ScreenCaptureKit
 final class SelectionController {
     static let shared = SelectionController()
 
-    enum Mode { case still, window, record, scrolling, ocr, pin, allInOne }
+    enum Mode { case still, window, record, scrolling, ocr, pin, allInOne, measure }
 
     struct Selection {
         var rect: CGRect        // global CG top-left-origin points
@@ -74,7 +74,7 @@ final class SelectionController {
     private var windowPickAllowed: Bool {
         switch mode {
         case .still, .window, .record, .allInOne: return true
-        case .scrolling, .ocr, .pin: return false
+        case .scrolling, .ocr, .pin, .measure: return false
         }
     }
 
@@ -83,6 +83,7 @@ final class SelectionController {
     private var freezeAllowed: Bool {
         switch mode {
         case .still, .window, .ocr, .pin, .allInOne: return Settings.shared.freezeSelectionScreen
+        case .measure: return true   // stable pixels while measuring
         case .record, .scrolling: return false
         }
     }
@@ -94,6 +95,7 @@ final class SelectionController {
         case .ocr: return "Drag over text — Esc cancels"
         case .scrolling, .pin: return "Drag to select — Esc cancels"
         case .allInOne: return "Select, then pick an action below — Esc cancels"
+        case .measure: return "Drag to measure — Esc cancels"
         }
     }
 
