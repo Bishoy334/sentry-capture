@@ -56,6 +56,8 @@ private final class ScrollingSession {
     private var borderPanel: NSPanel?
     private var hudPanel: ScrollingHUDPanel?
     private var statusLabel: NSTextField?
+    private var previewPanel: NSPanel?
+    private var previewImageView: NSImageView?
     private var pollTask: Task<Void, Never>?
     private var uiTornDown = false
     private var ended = false
@@ -143,14 +145,7 @@ private final class ScrollingSession {
         status.widthAnchor.constraint(greaterThanOrEqualToConstant: status.fittingSize.width)
             .isActive = true
 
-        let card = NSVisualEffectView()
-        card.material = .hudWindow
-        card.state = .active
-        card.wantsLayer = true
-        card.layer?.cornerRadius = 10
-        card.layer?.masksToBounds = true
-        card.layer?.borderWidth = 1
-        card.layer?.borderColor = NSColor.white.withAlphaComponent(0.1).cgColor
+        let card = HUDStyle.card()
         stack.translatesAutoresizingMaskIntoConstraints = false
         card.addSubview(stack)
         NSLayoutConstraint.activate([
@@ -262,6 +257,61 @@ private final class ScrollingSession {
         statusLabel?.stringValue = "Captured \(count) px"
     }
 
+    /// Live thumbnail of the growing document, floated beside the capture
+    /// rect (outside it — anything inside would be stitched). Skipped when
+    /// the rect leaves no room on either side.
+    func updatePreview(_ image: CGImage) {
+        guard !uiTornDown else { return }
+        let panelWidth: CGFloat = 190
+        let inset: CGFloat = 8
+        let displayHeight = min(
+            CGFloat(image.height) / CGFloat(image.width) * (panelWidth - 16), 500)
+        let size = NSSize(width: panelWidth, height: displayHeight + 16)
+
+        let bounds = display.frame
+        let x: CGFloat
+        if rect.maxX + 12 + panelWidth <= bounds.maxX - inset {
+            x = rect.maxX + 12
+        } else if rect.minX - 12 - panelWidth >= bounds.minX + inset {
+            x = rect.minX - 12 - panelWidth
+        } else {
+            return
+        }
+        let y = min(max(rect.minY, bounds.minY + inset), bounds.maxY - size.height - inset)
+        let frameCG = CGRect(x: x, y: y, width: size.width, height: size.height)
+
+        if previewPanel == nil {
+            let panel = NSPanel(
+                contentRect: Coords.appKitRect(fromCG: frameCG),
+                styleMask: [.borderless, .nonactivatingPanel],
+                backing: .buffered, defer: false)
+            panel.level = .statusBar
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+            panel.isOpaque = false
+            panel.backgroundColor = .clear
+            panel.hasShadow = true
+            panel.ignoresMouseEvents = true
+            panel.hidesOnDeactivate = false
+            panel.animationBehavior = .none
+            panel.isReleasedWhenClosed = false
+            let card = HUDStyle.card()
+            let imageView = NSImageView()
+            imageView.imageScaling = .scaleProportionallyUpOrDown
+            imageView.autoresizingMask = [.width, .height]
+            imageView.frame = NSRect(
+                x: 8, y: 8, width: size.width - 16, height: size.height - 16)
+            card.addSubview(imageView)
+            panel.contentView = card
+            panel.orderFrontRegardless()
+            previewPanel = panel
+            previewImageView = imageView
+        } else {
+            previewPanel?.setFrame(Coords.appKitRect(fromCG: frameCG), display: true)
+        }
+        previewImageView?.image = NSImage(
+            cgImage: image, size: NSSize(width: image.width, height: image.height))
+    }
+
     /// The poll task decided to finish on its own (hard stop / page bottom) —
     /// drop the chrome right away so the user isn't staring at dead buttons
     /// while the composite builds.
@@ -297,8 +347,11 @@ private final class ScrollingSession {
         hudPanel?.onEscape = nil
         hudPanel?.orderOut(nil)
         borderPanel?.orderOut(nil)
+        previewPanel?.orderOut(nil)
         hudPanel = nil
         borderPanel = nil
+        previewPanel = nil
+        previewImageView = nil
         statusLabel = nil
     }
 
@@ -387,6 +440,9 @@ private final class ScrollingSession {
                 let outcome = await engine.process(frame)
                 await session.updateStatus(
                     capturedPx: outcome.capturedPx, hasMotion: engine.hasMotion)
+                if outcome.dyPx != 0, let preview = engine.preview() {
+                    await session.updatePreview(preview)
+                }
 
                 if outcome.capturedPx >= ScrollingLimits.hardStopPx {
                     flags.finishRequested = true
@@ -506,7 +562,7 @@ private final class ScrollingBorderView: NSView {
         // the rect grown by 3 on each side, the stroke fills its outer 2pt.
         let path = NSBezierPath(rect: bounds.insetBy(dx: 1, dy: 1))
         path.lineWidth = 2
-        NSColor.controlAccentColor.setStroke()
+        HUDStyle.accent.setStroke()
         path.stroke()
     }
 }
@@ -549,8 +605,14 @@ private final class ScrollingStitchEngine {
     private var previousFrameDropped = false
 
     private var strips: [Strip] = []
+    /// Width-160 copies of every strip, for the live preview — compositing
+    /// the real strips per poll tick would decode megabytes each time.
+    private var previewStrips: [Strip] = []
     private var cumulativeOffset = 0
     private var capturedBottom = 0
+    /// Documents can grow UPWARD too (terminal scrollback, scrolling up
+    /// through a page) — top starts at 0 and only goes negative.
+    private var capturedTop = 0
 
     private var headerPx = 0
     private var footerPx = 0
@@ -569,7 +631,7 @@ private final class ScrollingStitchEngine {
               let profile = ScrollingNCC.profile(of: frame)
         else {
             previousFrameDropped = true
-            return ScrollingFrameOutcome(dyPx: 0, matched: false, capturedPx: capturedBottom)
+            return ScrollingFrameOutcome(dyPx: 0, matched: false, capturedPx: capturedHeight)
         }
 
         var visionDy: Int?
@@ -603,21 +665,23 @@ private final class ScrollingStitchEngine {
 
         guard let dy else {
             previousFrameDropped = true
-            return ScrollingFrameOutcome(dyPx: 0, matched: false, capturedPx: capturedBottom)
+            return ScrollingFrameOutcome(dyPx: 0, matched: false, capturedPx: capturedHeight)
         }
         previousProfile = profile
         previousFrameDropped = false
         lastFrame = frame
         if dy == 0 {
-            return ScrollingFrameOutcome(dyPx: 0, matched: true, capturedPx: capturedBottom)
+            return ScrollingFrameOutcome(dyPx: 0, matched: true, capturedPx: capturedHeight)
         }
 
         accumulateStaticBands(prev: prevProfile, curr: profile, dy: dy)
         acceptedMotionCount += 1
         cumulativeOffset += dy
         appendNewlyRevealed(from: frame)
-        return ScrollingFrameOutcome(dyPx: dy, matched: true, capturedPx: capturedBottom)
+        return ScrollingFrameOutcome(dyPx: dy, matched: true, capturedPx: capturedHeight)
     }
+
+    private var capturedHeight: Int { capturedBottom - capturedTop }
 
     private func ingestFirst(_ frame: CGImage) async -> ScrollingFrameOutcome {
         firstFrame = frame
@@ -629,7 +693,11 @@ private final class ScrollingStitchEngine {
         _ = try? await tracker.perform(on: frame)
         previousProfile = ScrollingNCC.profile(of: frame)
         strips = [Strip(image: frame, top: 0)]
+        if let small = ScrollingStitchEngine.downscaled(frame) {
+            previewStrips = [Strip(image: small, top: 0)]
+        }
         cumulativeOffset = 0
+        capturedTop = 0
         capturedBottom = frameHeight
         return ScrollingFrameOutcome(dyPx: 0, matched: true, capturedPx: frameHeight)
     }
@@ -663,31 +731,91 @@ private final class ScrollingStitchEngine {
         }
     }
 
-    /// Scrolling back up only moves the offset — nothing is un-stitched. New
-    /// pixels append only once the frame's usable bottom passes what has
-    /// already been captured.
+    /// Revisited ground is never re-stitched; new pixels append only when a
+    /// frame's usable content passes the captured document's edge — in
+    /// EITHER direction (scrolling up through terminal scrollback grows the
+    /// document above the starting frame).
     private func appendNewlyRevealed(from frame: CGImage) {
         let usableBottom = frameHeight - footerPx
         let newBottomDoc = cumulativeOffset + usableBottom
-        guard newBottomDoc > capturedBottom else { return }
-        let stripTop = max(capturedBottom - cumulativeOffset, headerPx)
-        let stripHeight = usableBottom - stripTop
-        if stripHeight > 0,
-           let shared = frame.cropping(
-            to: CGRect(x: 0, y: stripTop, width: frameWidth, height: stripHeight)),
-           let owned = ScrollingStitchEngine.copyPixels(shared) {
-            // cropping(to:) shares the whole frame's backing store; copying
-            // the strip lets the ~20 MB frame die with the next poll, keeping
-            // memory proportional to the document, not to frames kept.
-            strips.append(Strip(image: owned, top: cumulativeOffset + stripTop))
+        if newBottomDoc > capturedBottom {
+            let stripTop = max(capturedBottom - cumulativeOffset, headerPx)
+            let stripHeight = usableBottom - stripTop
+            appendStrip(from: frame, frameRowStart: stripTop, height: stripHeight)
+            capturedBottom = newBottomDoc
         }
-        capturedBottom = newBottomDoc
+
+        let newTopDoc = cumulativeOffset + headerPx
+        if newTopDoc < capturedTop {
+            let stripBottom = min(capturedTop - cumulativeOffset, usableBottom)
+            let stripHeight = stripBottom - headerPx
+            appendStrip(from: frame, frameRowStart: headerPx, height: stripHeight)
+            capturedTop = newTopDoc
+        }
+    }
+
+    private func appendStrip(from frame: CGImage, frameRowStart: Int, height: Int) {
+        guard height > 0,
+              let shared = frame.cropping(
+                to: CGRect(x: 0, y: frameRowStart, width: frameWidth, height: height)),
+              let owned = ScrollingStitchEngine.copyPixels(shared) else { return }
+        // cropping(to:) shares the whole frame's backing store; copying
+        // the strip lets the ~20 MB frame die with the next poll, keeping
+        // memory proportional to the document, not to frames kept.
+        let strip = Strip(image: owned, top: cumulativeOffset + frameRowStart)
+        strips.append(strip)
+        if let small = ScrollingStitchEngine.downscaled(owned) {
+            previewStrips.append(Strip(image: small, top: strip.top))
+        }
+    }
+
+    /// The growing document at thumbnail size — cheap enough to rebuild per
+    /// accepted frame because it composites the width-160 strip copies.
+    func preview(maxWidth: Int = 160, maxHeight: Int = 480) -> CGImage? {
+        let total = capturedHeight
+        guard frameWidth > 0, total > 0, !previewStrips.isEmpty else { return nil }
+        let scale = min(
+            CGFloat(maxWidth) / CGFloat(frameWidth),
+            CGFloat(maxHeight) / CGFloat(total))
+        let width = max(Int((CGFloat(frameWidth) * scale).rounded()), 8)
+        let height = max(Int((CGFloat(total) * scale).rounded()), 8)
+        guard let context = CGContext(
+            data: nil, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                | CGBitmapInfo.byteOrder32Little.rawValue
+        ) else { return nil }
+        context.interpolationQuality = .low
+        context.setFillColor(CGColor(gray: 1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        for strip in previewStrips {
+            let h = CGFloat(strip.image.height) / 160 * CGFloat(frameWidth) * scale
+            let top = CGFloat(strip.top - capturedTop) * scale
+            context.draw(strip.image, in: CGRect(
+                x: 0, y: CGFloat(height) - top - h, width: CGFloat(width), height: h))
+        }
+        return context.makeImage()
+    }
+
+    nonisolated static func downscaled(_ image: CGImage, toWidth width: Int = 160) -> CGImage? {
+        let height = max(Int((CGFloat(image.height) * CGFloat(width) / CGFloat(image.width)).rounded()), 1)
+        guard let context = CGContext(
+            data: nil, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                | CGBitmapInfo.byteOrder32Little.rawValue
+        ) else { return nil }
+        context.interpolationQuality = .low
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return context.makeImage()
     }
 
     func composite() -> CGImage? {
-        guard frameWidth > 0, capturedBottom > 0 else { return nil }
+        guard frameWidth > 0, capturedHeight > 0 else { return nil }
         var allStrips = strips
-        var totalHeight = capturedBottom
+        var totalHeight = capturedHeight
         // Every appended strip had the footer band cropped off; the last
         // frame supplies the one genuine copy at the document bottom — but
         // only if the user finished at the bottom, else it would stamp footer
@@ -710,8 +838,9 @@ private final class ScrollingStitchEngine {
         context.setFillColor(CGColor(gray: 1, alpha: 1))
         context.fill(CGRect(x: 0, y: 0, width: frameWidth, height: totalHeight))
         for strip in allStrips {
-            // CG contexts draw bottom-up; strip tops are from the document top.
-            let y = totalHeight - strip.top - strip.image.height
+            // CG contexts draw bottom-up; strip tops are document coordinates
+            // (capturedTop can be negative when the page grew upward).
+            let y = totalHeight - (strip.top - capturedTop) - strip.image.height
             context.draw(strip.image, in: CGRect(
                 x: 0, y: y, width: strip.image.width, height: strip.image.height))
         }
@@ -758,10 +887,12 @@ private enum ScrollingNCC {
         return ScrollingFrameProfile(width: sampleWidth, height: height, px: floats)
     }
 
-    /// dy > 0 = scrolled down (content moved up); dy < 0 = scrolled back up.
-    /// Slides a band of the previous frame (anchored just above the footer)
-    /// over the current frame; best normalised cross-correlation wins, and
-    /// anything under 0.9 (animation, flat content) is a non-answer.
+    /// dy > 0 = scrolled down (content moved up); dy < 0 = scrolled up
+    /// (terminal scrollback). The reference band sits in the CENTRE of the
+    /// previous frame — an edge-anchored band can only slide one way before
+    /// falling off the frame, which made upward scroll unmeasurable. Best
+    /// normalised cross-correlation wins; under 0.9 (animation, flat
+    /// content) is a non-answer.
     static func verticalOffset(
         prev: ScrollingFrameProfile, curr: ScrollingFrameProfile,
         headerPx: Int, footerPx: Int,
@@ -773,8 +904,9 @@ private enum ScrollingNCC {
             return nil
         }
         let usableEnd = height - footerPx
-        let bandStart = max(headerPx, usableEnd - bandRows)
-        let rows = usableEnd - bandStart
+        let usable = usableEnd - headerPx
+        let bandStart = max(headerPx, headerPx + (usable - bandRows) / 2)
+        let rows = min(bandRows, usableEnd - bandStart)
         guard rows >= 16 else { return nil }
         let count = rows * width
 
@@ -791,8 +923,8 @@ private enum ScrollingNCC {
         var best: (dy: Int, score: Float) = (0, -2)
         var candidateNorm = [Float](repeating: 0, count: count)
         var dot: Float = 0
-        // Small negative range = backwards scroll.
-        for dy in (-maxScroll / 4)...maxScroll {
+        // Symmetric: down-scroll and up-scroll are equal citizens.
+        for dy in -maxScroll...maxScroll {
             let row = bandStart - dy // where the band lands in the current frame
             guard row >= headerPx, row + rows <= usableEnd else { continue }
             var candidateSD: Float = 0
