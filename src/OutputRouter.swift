@@ -29,7 +29,7 @@ final class OutputRouter {
         let persist = settings.saveToDisk
             || (!settings.copyToClipboard && !settings.showQuickAccess)
         if persist {
-            let format = settings.imageFormat
+            let format: ImageFormat = still.hasAlpha ? .png : settings.imageFormat
             let data: Data?
             if format == .png {
                 sharedPNG = encode(still, format: .png)
@@ -99,7 +99,7 @@ final class OutputRouter {
             else { return nil }
             return (url, id)
         }
-        let format = Settings.shared.imageFormat
+        let format: ImageFormat = still.hasAlpha ? .png : Settings.shared.imageFormat
         guard let data = encode(still, format: format) else { return nil }
         guard let record = SentryStore.shared.createStillRecord(
             still, data: data,

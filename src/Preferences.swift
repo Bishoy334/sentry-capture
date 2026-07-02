@@ -207,10 +207,24 @@ private struct PrefsScreenshotsPane: View {
                 TextField("Filename prefix", text: $settings.filenamePrefix)
                 Toggle("Scale Retina screenshots down to 1x", isOn: $settings.downscaleRetina)
                 Toggle("Freeze screen while selecting", isOn: $settings.freezeSelectionScreen)
+                Toggle("Window captures include shadow (transparent PNG)",
+                       isOn: $settings.windowCaptureShadow)
                 Picker("Self-timer delay", selection: $settings.selfTimerSeconds) {
                     Text("3 seconds").tag(3)
                     Text("5 seconds").tag(5)
                     Text("10 seconds").tag(10)
+                }
+                Picker("OCR language", selection: $settings.ocrLanguage) {
+                    Text("Automatic").tag("")
+                    Text("English").tag("en-US")
+                    Text("German").tag("de-DE")
+                    Text("French").tag("fr-FR")
+                    Text("Spanish").tag("es-ES")
+                    Text("Italian").tag("it-IT")
+                    Text("Portuguese").tag("pt-BR")
+                    Text("Chinese (Simplified)").tag("zh-Hans")
+                    Text("Japanese").tag("ja-JP")
+                    Text("Korean").tag("ko-KR")
                 }
             }
             Section {
@@ -281,6 +295,8 @@ private struct PrefsRecordingPane: View {
             Section {
                 Toggle("Show keystrokes", isOn: $settings.showKeystrokesInRecording)
                 Toggle("Show webcam bubble", isOn: $settings.showWebcamInRecording)
+                Toggle("Highlight cursor with a halo", isOn: $settings.showCursorHalo)
+                Toggle("Hide desktop icons", isOn: $settings.hideDesktopWhileRecording)
             } footer: {
                 Text("Area recordings only. Keystrokes need Accessibility access; the bubble needs camera access.")
             }

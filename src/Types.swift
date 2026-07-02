@@ -42,6 +42,9 @@ struct StillCapture {
     /// The Sentry record this capture belongs to, once delivered — re-exports
     /// (annotator/QAO/pin saves) update that record instead of forking.
     var recordID: String? = nil
+    /// Transparency matters (window capture with shadow) — delivery forces
+    /// PNG regardless of the configured format, or the alpha dies in JPEG.
+    var hasAlpha: Bool = false
 
     var pointSize: NSSize {
         NSSize(width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale)

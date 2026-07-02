@@ -299,6 +299,23 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         return true
     }
 
+    /// Drops an emoji sticker at the image centre, selected and ready to move.
+    func addSticker(_ emoji: String) {
+        let pre = snapshot()
+        var a = AnnotatorAnnotation(kind: .sticker)
+        a.text = AnnotatorRender.attributed(emoji, size: 64, colour: .white, style: .standard)
+        let side = min(max(min(pointSize.width, pointSize.height) * 0.18, 36), 160)
+        a.rect = CGRect(
+            x: pointSize.width / 2 - side / 2, y: pointSize.height / 2 - side / 2,
+            width: side, height: side)
+        annotations.append(a)
+        setSelected(a.id)
+        refreshCanvasBounds()
+        setNeedsDisplay(AnnotatorGeo.displayBounds(of: a))
+        registerUndo(pre, name: "Add Sticker")
+        onStateChange?()
+    }
+
     private func cachedPatch(for a: AnnotatorAnnotation) -> (rect: CGRect, image: CGImage)? {
         guard a.redactStyle != .blackout else { return nil }
         if let entry = patchCache[a.id], entry.sourceRect == a.rect, entry.style == a.redactStyle {

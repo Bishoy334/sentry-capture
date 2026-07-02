@@ -120,6 +120,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// Still-action tail of the All-in-One flow: runs the strip's self-timer
+    /// countdown first when one is set. The countdown exists to stage the
+    /// screen, so a timed capture goes live — never the frozen frame.
+    private func captureAfterTimer(
+        _ selection: SelectionController.Selection,
+        _ handle: @escaping @MainActor (StillCapture) -> Void
+    ) {
+        Task { @MainActor in
+            var selection = selection
+            if selection.timerSeconds > 0 {
+                selection.frozen = nil
+                for remaining in stride(from: selection.timerSeconds, through: 1, by: -1) {
+                    Toast.show("Capturing in \(remaining)…", symbol: "timer", duration: 0.9)
+                    try? await Task.sleep(for: .seconds(1))
+                }
+            }
+            if let still = await self.capture(selection) {
+                handle(still)
+            }
+        }
+    }
+
     // MARK: Dispatch
 
     func dispatch(_ action: HotkeyAction) {
@@ -160,22 +182,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 case .scrollingCapture:
                     ScrollingCaptureController.shared.begin(selection: selection)
                 case .copyText:
-                    Task { @MainActor in
-                        if let still = await self.capture(selection) {
-                            OutputRouter.shared.copyText(from: still)
-                        }
+                    self.captureAfterTimer(selection) {
+                        OutputRouter.shared.copyText(from: $0)
                     }
                 case .pinArea:
-                    Task { @MainActor in
-                        if let still = await self.capture(selection) {
-                            PinController.shared.pin(still)
-                        }
+                    self.captureAfterTimer(selection) {
+                        PinController.shared.pin($0)
                     }
                 default:
-                    Task { @MainActor in
-                        if let still = await self.capture(selection) {
-                            OutputRouter.shared.deliver(still)
-                        }
+                    self.captureAfterTimer(selection) {
+                        OutputRouter.shared.deliver($0)
                     }
                 }
             }

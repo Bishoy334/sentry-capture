@@ -288,6 +288,12 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         stack.insertArrangedSubview(background, at: 1)
         backgroundButton = background
 
+        // Sticker stamps: a one-tap emoji menu, placed as movable annotations.
+        let sticker = toolbarIconButton(
+            symbol: "face.smiling", tooltip: "Sticker",
+            action: #selector(stickerTapped(_:)))
+        stack.addArrangedSubview(sticker)
+
         // Undo/redo sit between the tools and the primary actions.
         undoButton = toolbarIconButton(
             symbol: "arrow.uturn.backward", tooltip: "Undo (⌘Z)", action: #selector(undoTapped))
@@ -653,8 +659,8 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             break   // a spotlight has no styling — the veil is fixed
         case .some(.arrow):
             (showColour, showStroke, showArrowStyle) = (true, true, true)
-        case .some(.image), .none:
-            break   // select with nothing selected / a dropped image: no options
+        case .some(.image), .some(.sticker), .none:
+            break   // nothing selected, or an object with no styling options
         case .some:
             (showColour, showStroke) = (true, true)
         }
@@ -885,6 +891,29 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         if !canvas.isEditingText {
             window.makeFirstResponder(canvas)
         }
+    }
+
+    private static let stickerSet = [
+        "👍", "👎", "❤️", "🔥", "⭐", "✅", "❌", "⚠️",
+        "👀", "🎉", "💡", "❓", "💯", "🚀", "🐛", "🤦",
+    ]
+
+    @objc private func stickerTapped(_ sender: NSButton) {
+        let menu = NSMenu()
+        for emoji in Self.stickerSet {
+            let item = NSMenuItem(
+                title: emoji, action: #selector(stickerPicked(_:)), keyEquivalent: "")
+            item.target = self
+            item.attributedTitle = NSAttributedString(
+                string: emoji, attributes: [.font: NSFont.systemFont(ofSize: 22)])
+            menu.addItem(item)
+        }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.maxY + 4), in: sender)
+    }
+
+    @objc private func stickerPicked(_ sender: NSMenuItem) {
+        canvas.addSticker(sender.title)
+        window.makeFirstResponder(canvas)
     }
 
     @objc private func backgroundTapped() {

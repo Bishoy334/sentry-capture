@@ -81,6 +81,9 @@ final class RecordingController {
             // Up during configuration so the user can place it before recording.
             ensureOverlays()?.showWebcam()
         }
+        if Settings.shared.hideDesktopWhileRecording {
+            ensureOverlays()?.showDesktopCover()
+        }
         onStateChange?()
     }
 
@@ -190,6 +193,9 @@ final class RecordingController {
         // the window-level exclusion path snapshots it into the excluded list —
         // it must never appear in the recording.
         showRecordingHUD(for: selection)
+        if settings.showCursorHalo, selection.window == nil {
+            ensureOverlays()?.showCursorHalo()
+        }
         // And the webcam bubble must ALSO exist by then, for the opposite
         // reason: its window has to be findable so the filter can leave it
         // capturable — a bubble that spawns after the snapshot vanishes from
@@ -524,6 +530,20 @@ final class RecordingController {
                 self?.ensureOverlays()?.showWebcam()
             } else {
                 self?.overlays?.hideWebcam()
+            }
+        }
+        strip.onHaloChange = { [weak self] on in
+            if on {
+                self?.ensureOverlays()?.showCursorHalo()
+            } else {
+                self?.overlays?.hideCursorHalo()
+            }
+        }
+        strip.onDesktopChange = { [weak self] on in
+            if on {
+                self?.ensureOverlays()?.showDesktopCover()
+            } else {
+                self?.overlays?.hideDesktopCover()
             }
         }
 
@@ -892,6 +912,8 @@ private final class RecorderControlStrip: NSPanel {
     var onRecord: (() -> Void)?
     var onFormatChange: ((Bool) -> Void)?
     var onWebcamChange: ((Bool) -> Void)?
+    var onHaloChange: ((Bool) -> Void)?
+    var onDesktopChange: ((Bool) -> Void)?
 
     private var format: NSSegmentedControl!
     private var audioToggle: NSButton!
@@ -899,6 +921,8 @@ private final class RecorderControlStrip: NSPanel {
     private var cursorToggle: NSButton!
     private var keysToggle: NSButton!
     private var webcamToggle: NSButton!
+    private var haloToggle: NSButton!
+    private var desktopToggle: NSButton!
     private var recordButton: NSButton!
     private var cancelButton: NSButton!
 
@@ -934,6 +958,8 @@ private final class RecorderControlStrip: NSPanel {
         cursorToggle.isEnabled = enabled
         keysToggle.isEnabled = enabled
         webcamToggle.isEnabled = enabled
+        haloToggle.isEnabled = enabled
+        desktopToggle.isEnabled = enabled
         recordButton.isEnabled = enabled
     }
 
@@ -964,6 +990,12 @@ private final class RecorderControlStrip: NSPanel {
         webcamToggle = toggle(
             symbol: "video", tip: "Webcam Bubble",
             isOn: Settings.shared.showWebcamInRecording, action: #selector(webcamToggled(_:)))
+        haloToggle = toggle(
+            symbol: "cursorarrow.rays", tip: "Cursor Halo",
+            isOn: Settings.shared.showCursorHalo, action: #selector(haloToggled(_:)))
+        desktopToggle = toggle(
+            symbol: "menubar.dock.rectangle", tip: "Hide Desktop Icons",
+            isOn: Settings.shared.hideDesktopWhileRecording, action: #selector(desktopToggled(_:)))
 
         cancelButton = NSButton(title: "Cancel", target: self, action: #selector(cancelPressed))
         cancelButton.bezelStyle = .rounded
@@ -978,7 +1010,8 @@ private final class RecorderControlStrip: NSPanel {
         let stack = NSStackView(views: [
             sizeLabel, hairline(),
             format, hairline(),
-            audioToggle, micToggle, cursorToggle, keysToggle, webcamToggle, hairline(),
+            audioToggle, micToggle, cursorToggle, keysToggle, webcamToggle,
+            haloToggle, desktopToggle, hairline(),
             cancelButton, recordButton,
         ])
         stack.orientation = .horizontal
@@ -1058,6 +1091,18 @@ private final class RecorderControlStrip: NSPanel {
         Settings.shared.showWebcamInRecording = sender.state == .on
         tint(sender)
         onWebcamChange?(sender.state == .on)
+    }
+
+    @objc private func haloToggled(_ sender: NSButton) {
+        Settings.shared.showCursorHalo = sender.state == .on
+        tint(sender)
+        onHaloChange?(sender.state == .on)
+    }
+
+    @objc private func desktopToggled(_ sender: NSButton) {
+        Settings.shared.hideDesktopWhileRecording = sender.state == .on
+        tint(sender)
+        onDesktopChange?(sender.state == .on)
     }
 
     @objc private func cancelPressed() {

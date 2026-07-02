@@ -39,6 +39,11 @@ enum OCR {
             }
             request.recognitionLevel = .accurate
             request.usesLanguageCorrection = true
+            // Read via UserDefaults, not Settings — this runs off-main.
+            if let language = UserDefaults.standard.string(forKey: "ocrLanguage"),
+               !language.isEmpty {
+                request.recognitionLanguages = [language]
+            }
 
             DispatchQueue.global(qos: .userInitiated).async {
                 do {

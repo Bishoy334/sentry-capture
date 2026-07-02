@@ -31,15 +31,21 @@ final class Settings: ObservableObject {
     @Published var showWebcamInRecording: Bool
     /// small | medium | large — bubble diameter in the recording.
     @Published var webcamBubbleSize: String
+    @Published var showCursorHalo: Bool
+    @Published var hideDesktopWhileRecording: Bool
     @Published var recordSystemAudio: Bool
     @Published var recordMicrophone: Bool
     @Published var videoFPS: Int
     @Published var gifFPS: Int
     @Published var recordingCountdown: Int
     @Published var freezeSelectionScreen: Bool
+    /// Window captures get a transparent margin + composited drop shadow.
+    @Published var windowCaptureShadow: Bool
     @Published var selfTimerSeconds: Int
     /// Days to keep captures; 0 = forever. Expired records move to the Bin.
     @Published var retentionDays: Int
+    /// OCR recognition language; empty = automatic detection.
+    @Published var ocrLanguage: String
     @Published var hotkeys: [HotkeyAction: Hotkey?]
 
     var saveDirectory: URL {
@@ -85,14 +91,18 @@ final class Settings: ObservableObject {
         showKeystrokesInRecording = d.object(forKey: "showKeystrokesInRecording") as? Bool ?? false
         showWebcamInRecording = d.object(forKey: "showWebcamInRecording") as? Bool ?? false
         webcamBubbleSize = d.string(forKey: "webcamBubbleSize") ?? "medium"
+        showCursorHalo = d.object(forKey: "showCursorHalo") as? Bool ?? false
+        hideDesktopWhileRecording = d.object(forKey: "hideDesktopWhileRecording") as? Bool ?? false
         recordSystemAudio = d.object(forKey: "recordSystemAudio") as? Bool ?? true
         recordMicrophone = d.object(forKey: "recordMicrophone") as? Bool ?? false
         videoFPS = d.object(forKey: "videoFPS") as? Int ?? 60
         gifFPS = d.object(forKey: "gifFPS") as? Int ?? 12
         recordingCountdown = d.object(forKey: "recordingCountdown") as? Int ?? 3
         freezeSelectionScreen = d.object(forKey: "freezeSelectionScreen") as? Bool ?? true
+        windowCaptureShadow = d.object(forKey: "windowCaptureShadow") as? Bool ?? true
         selfTimerSeconds = d.object(forKey: "selfTimerSeconds") as? Int ?? 5
         retentionDays = d.object(forKey: "retentionDays") as? Int ?? 0
+        ocrLanguage = d.string(forKey: "ocrLanguage") ?? ""
 
         var loaded: [HotkeyAction: Hotkey?] = [:]
         let stored = (try? JSONDecoder().decode(
@@ -135,14 +145,18 @@ final class Settings: ObservableObject {
         d.set(showKeystrokesInRecording, forKey: "showKeystrokesInRecording")
         d.set(showWebcamInRecording, forKey: "showWebcamInRecording")
         d.set(webcamBubbleSize, forKey: "webcamBubbleSize")
+        d.set(showCursorHalo, forKey: "showCursorHalo")
+        d.set(hideDesktopWhileRecording, forKey: "hideDesktopWhileRecording")
         d.set(recordSystemAudio, forKey: "recordSystemAudio")
         d.set(recordMicrophone, forKey: "recordMicrophone")
         d.set(videoFPS, forKey: "videoFPS")
         d.set(gifFPS, forKey: "gifFPS")
         d.set(recordingCountdown, forKey: "recordingCountdown")
         d.set(freezeSelectionScreen, forKey: "freezeSelectionScreen")
+        d.set(windowCaptureShadow, forKey: "windowCaptureShadow")
         d.set(selfTimerSeconds, forKey: "selfTimerSeconds")
         d.set(retentionDays, forKey: "retentionDays")
+        d.set(ocrLanguage, forKey: "ocrLanguage")
         let encodable = Dictionary(uniqueKeysWithValues: hotkeys.map { ($0.key.rawValue, $0.value) })
         if let data = try? JSONEncoder().encode(encodable) {
             d.set(data, forKey: "hotkeys")

@@ -80,7 +80,7 @@ enum AnnotatorArrowStyle: Int, Equatable, Codable, CaseIterable {
 }
 
 enum AnnotatorTextStyle: Int, Equatable, Codable, CaseIterable {
-    case standard, rounded, mono, outlined, boxed, roundBoxed, monoBoxed
+    case standard, rounded, mono, outlined, boxed, roundBoxed, monoBoxed, bubble
 
     var label: String {
         switch self {
@@ -91,6 +91,7 @@ enum AnnotatorTextStyle: Int, Equatable, Codable, CaseIterable {
         case .boxed: return "Boxed"
         case .roundBoxed: return "Round Boxed"
         case .monoBoxed: return "Mono Boxed"
+        case .bubble: return "Speech Bubble"
         }
     }
 
@@ -116,7 +117,7 @@ enum AnnotatorTextStyle: Int, Equatable, Codable, CaseIterable {
 }
 
 enum AnnotatorKind: String, Equatable, Codable {
-    case arrow, line, rect, filledRect, ellipse, freehand, highlighter, text, counter, redact, spotlight, image
+    case arrow, line, rect, filledRect, ellipse, freehand, highlighter, text, counter, redact, spotlight, image, sticker
 }
 
 /// Dropped-in images ride annotations as a reference type so the flat value
@@ -361,7 +362,7 @@ enum AnnotatorHit {
         case .highlighter:
             guard let path = AnnotatorPaths.outline(a) else { return false }
             return fatContains(path, width: AnnotatorRender.highlighterWidth, point: p)
-        case .filledRect, .redact, .spotlight, .image:
+        case .filledRect, .redact, .spotlight, .image, .sticker:
             return a.rect.insetBy(dx: -4, dy: -4).contains(p)
         case .text:
             return a.rect.insetBy(dx: -6, dy: -6).contains(p)
@@ -388,7 +389,7 @@ enum AnnotatorHit {
         switch a.kind {
         case .line, .arrow:
             return [(.lineStart, a.start), (.lineEnd, a.end)]
-        case .rect, .filledRect, .ellipse, .redact, .text, .spotlight, .image:
+        case .rect, .filledRect, .ellipse, .redact, .text, .spotlight, .image, .sticker:
             return rectHandles(a.rect)
         case .freehand, .highlighter, .counter:
             return []   // move-only
@@ -534,6 +535,26 @@ enum AnnotatorRender {
                     roundedRect: box, cornerWidth: radius, cornerHeight: radius, transform: nil))
                 ctx.fillPath()
             }
+            if a.textStyle == .bubble {
+                // White bubble + tail, bordered in the annotation colour; the
+                // union keeps the tail seam out of the stroke.
+                let box = a.rect.insetBy(dx: -10, dy: -8)
+                let body = CGPath(
+                    roundedRect: box, cornerWidth: 10, cornerHeight: 10, transform: nil)
+                let tail = CGMutablePath()
+                tail.move(to: CGPoint(x: box.minX + 12, y: box.maxY - 4))
+                tail.addLine(to: CGPoint(x: box.minX + 32, y: box.maxY - 4))
+                tail.addLine(to: CGPoint(x: box.minX + 4, y: box.maxY + 18))
+                tail.closeSubpath()
+                let bubble = body.union(tail)
+                ctx.setFillColor(NSColor.white.withAlphaComponent(0.97).cgColor)
+                ctx.addPath(bubble)
+                ctx.fillPath()
+                ctx.setStrokeColor(a.colour.cgColor)
+                ctx.setLineWidth(2)
+                ctx.addPath(bubble)
+                ctx.strokePath()
+            }
             a.text?.draw(in: a.rect)
         case .counter:
             ctx.setFillColor(a.colour.cgColor)
@@ -566,6 +587,16 @@ enum AnnotatorRender {
         case .image:
             if let ref = a.imageRef {
                 blitFlipped(ref.image, in: a.rect, ctx: ctx, canvasHeight: canvasHeight)
+            }
+        case .sticker:
+            if let emoji = a.text?.string, !emoji.isEmpty {
+                // Sized by the rect, so the resize handles scale the emoji.
+                let str = NSAttributedString(string: emoji, attributes: [
+                    .font: NSFont.systemFont(ofSize: a.rect.height * 0.82),
+                ])
+                let size = str.size()
+                str.draw(at: CGPoint(
+                    x: a.rect.midX - size.width / 2, y: a.rect.midY - size.height / 2))
             }
         }
     }

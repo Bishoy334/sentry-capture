@@ -15,6 +15,9 @@ final class RecordingOverlays {
     private var keystrokePanel: KeystrokeHUDPanel?
     private var keyMonitor: Any?
     private var webcamTask: Task<Void, Never>?
+    private var haloPanel: CursorHaloPanel?
+    private var haloMonitor: Any?
+    private var desktopCovers: [NSPanel] = []
 
     init(rect: CGRect) {
         self.rect = rect
@@ -25,10 +28,10 @@ final class RecordingOverlays {
         var numbers: Set<CGWindowID> = []
         if let webcamPanel { numbers.insert(CGWindowID(webcamPanel.windowNumber)) }
         if let keystrokePanel { numbers.insert(CGWindowID(keystrokePanel.windowNumber)) }
+        if let haloPanel { numbers.insert(CGWindowID(haloPanel.windowNumber)) }
+        for cover in desktopCovers { numbers.insert(CGWindowID(cover.windowNumber)) }
         return numbers
     }
-
-    var isEmpty: Bool { webcamPanel == nil && keystrokePanel == nil && keyMonitor == nil }
 
     func teardown() {
         if let keyMonitor {
@@ -38,6 +41,53 @@ final class RecordingOverlays {
         keystrokePanel?.orderOut(nil)
         keystrokePanel = nil
         hideWebcam()
+        hideCursorHalo()
+        hideDesktopCover()
+    }
+
+    // MARK: Cursor halo
+
+    /// Soft ring that follows the pointer for the whole recording — a global
+    /// mouse-moved monitor needs no permissions (only keyboards do).
+    func showCursorHalo() {
+        guard haloPanel == nil else { return }
+        let panel = CursorHaloPanel()
+        panel.follow(NSEvent.mouseLocation)
+        panel.orderFrontRegardless()
+        haloPanel = panel
+        haloMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged]
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.haloPanel?.follow(NSEvent.mouseLocation) }
+        }
+    }
+
+    func hideCursorHalo() {
+        if let haloMonitor {
+            NSEvent.removeMonitor(haloMonitor)
+            self.haloMonitor = nil
+        }
+        haloPanel?.orderOut(nil)
+        haloPanel = nil
+    }
+
+    // MARK: Desktop cover
+
+    /// Hides desktop clutter by sliding a wallpaper-painted window between the
+    /// real wallpaper and the icon layer — no Finder restart, instantly
+    /// reversible. Must be capturable, so it lives in the exception set.
+    func showDesktopCover() {
+        guard desktopCovers.isEmpty else { return }
+        for screen in NSScreen.screens {
+            let cover = DesktopCoverPanel(screen: screen)
+            cover.orderFrontRegardless()
+            desktopCovers.append(cover)
+        }
+    }
+
+    func hideDesktopCover() {
+        for cover in desktopCovers { cover.orderOut(nil) }
+        desktopCovers.removeAll()
     }
 
     // MARK: Webcam bubble
@@ -104,6 +154,75 @@ final class RecordingOverlays {
         } else {
             keystrokePanel?.show(event)
         }
+    }
+}
+
+// MARK: - Cursor halo panel
+
+@MainActor
+private final class CursorHaloPanel: NSPanel {
+    private static let side: CGFloat = 56
+
+    init() {
+        super.init(
+            contentRect: NSRect(x: 0, y: 0, width: Self.side, height: Self.side),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered, defer: false)
+        isOpaque = false
+        backgroundColor = .clear
+        hasShadow = false
+        level = .statusBar
+        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        hidesOnDeactivate = false
+        ignoresMouseEvents = true
+        isReleasedWhenClosed = false
+        animationBehavior = .none
+
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: Self.side, height: Self.side))
+        view.wantsLayer = true
+        view.layer?.backgroundColor = NSColor.systemYellow.withAlphaComponent(0.22).cgColor
+        view.layer?.borderColor = NSColor.systemYellow.withAlphaComponent(0.45).cgColor
+        view.layer?.borderWidth = 1.5
+        view.layer?.cornerRadius = Self.side / 2
+        contentView = view
+    }
+
+    func follow(_ mouseAppKit: NSPoint) {
+        setFrameOrigin(NSPoint(
+            x: mouseAppKit.x - Self.side / 2, y: mouseAppKit.y - Self.side / 2))
+    }
+}
+
+// MARK: - Desktop cover panel
+
+/// Paints the screen's wallpaper in a window one level below the desktop
+/// icons: icons vanish, wallpaper stays.
+@MainActor
+private final class DesktopCoverPanel: NSPanel {
+    init(screen: NSScreen) {
+        super.init(
+            contentRect: screen.frame,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered, defer: false)
+        isOpaque = true
+        hasShadow = false
+        level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)) - 1)
+        collectionBehavior = [.canJoinAllSpaces, .stationary]
+        hidesOnDeactivate = false
+        ignoresMouseEvents = true
+        isReleasedWhenClosed = false
+        animationBehavior = .none
+
+        let imageView = NSImageView(frame: NSRect(origin: .zero, size: screen.frame.size))
+        imageView.imageScaling = .scaleAxesIndependently
+        imageView.autoresizingMask = [.width, .height]
+        if let url = NSWorkspace.shared.desktopImageURL(for: screen),
+           let wallpaper = NSImage(contentsOf: url) {
+            imageView.image = wallpaper
+        } else {
+            backgroundColor = .black
+        }
+        contentView = imageView
     }
 }
 

@@ -22,6 +22,8 @@ final class SelectionController {
         var frozen: StillCapture? = nil
         /// All-in-One only: which action the user picked from the strip.
         var chosenAction: HotkeyAction? = nil
+        /// All-in-One only: strip self-timer — capture runs after a countdown.
+        var timerSeconds: Int = 0
     }
 
     private(set) var isActive = false
@@ -237,6 +239,7 @@ final class SelectionController {
         }
         guard var selection = heldSelection else { return }
         selection.chosenAction = action
+        selection.timerSeconds = strip?.timerSeconds ?? 0
         finish(with: selection)
     }
 
@@ -1001,6 +1004,9 @@ private final class AllInOneStrip: NSPanel, NSTextFieldDelegate {
     private var captureButton: NSButton?
     private var widthField: NSTextField!
     private var heightField: NSTextField!
+    private var timerButton: NSButton!
+    /// Cycled by the timer button: 0 → 3 → 5 → 10.
+    private(set) var timerSeconds = 0
 
     init(screen: NSScreen, onPick: @escaping (HotkeyAction?) -> Void) {
         self.onPick = onPick
@@ -1047,6 +1053,15 @@ private final class AllInOneStrip: NSPanel, NSTextFieldDelegate {
         stack.setCustomSpacing(4, after: widthField)
         stack.setCustomSpacing(4, after: xLabel)
         stack.setCustomSpacing(8, after: heightField)
+        stack.setCustomSpacing(8, after: stack.arrangedSubviews[stack.arrangedSubviews.count - 1])
+
+        // Self-timer: cycles Off → 3s → 5s → 10s, applies to still actions.
+        timerButton = stripButton(symbol: "timer", label: "Timer", tag: -1)
+        timerButton.target = self
+        timerButton.action = #selector(timerTapped)
+        stack.addArrangedSubview(timerButton)
+        stack.addArrangedSubview(stripDivider())
+        stack.setCustomSpacing(8, after: timerButton)
         stack.setCustomSpacing(8, after: stack.arrangedSubviews[stack.arrangedSubviews.count - 1])
 
         for (i, entry) in entries.enumerated() {
@@ -1174,11 +1189,19 @@ private final class AllInOneStrip: NSPanel, NSTextFieldDelegate {
     }
 
     @objc private func buttonTapped(_ sender: NSButton) {
-        if sender.tag < entriesActions.count {
+        if sender.tag >= 0, sender.tag < entriesActions.count {
             onPick(entriesActions[sender.tag])
         } else {
             onPick(nil)   // cancel
         }
+    }
+
+    @objc private func timerTapped() {
+        let cycle = [0, 3, 5, 10]
+        let index = (cycle.firstIndex(of: timerSeconds) ?? 0) + 1
+        timerSeconds = cycle[index % cycle.count]
+        timerButton.title = timerSeconds == 0 ? "Timer" : "\(timerSeconds)s"
+        timerButton.contentTintColor = timerSeconds == 0 ? .white : .controlAccentColor
     }
 
     // Key-capable for the size fields; becomesKeyOnlyIfNeeded means only a

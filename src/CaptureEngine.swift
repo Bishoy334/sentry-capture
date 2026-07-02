@@ -140,8 +140,43 @@ final class CaptureEngine {
         config.ignoreGlobalClipSingleWindow = true
         config.scalesToFit = false
 
-        let image = try await screenshot(filter: filter, config: config)
-        return StillCapture(image: image, scale: scale, source: .window, screenRect: window.frame)
+        var image = try await screenshot(filter: filter, config: config)
+        var hasAlpha = false
+        if Settings.shared.windowCaptureShadow,
+           let shadowed = Self.compositeShadow(on: image, scale: scale) {
+            // Our own shadow, like every screenshot tool: the system one can't
+            // be captured pixel-exactly (no API reports its margin).
+            image = shadowed
+            hasAlpha = true
+        }
+        var still = StillCapture(
+            image: image, scale: scale, source: .window, screenRect: window.frame)
+        still.hasAlpha = hasAlpha
+        return still
+    }
+
+    /// Pads the window image and draws a macOS-like drop shadow derived from
+    /// its alpha, on a transparent canvas.
+    nonisolated private static func compositeShadow(
+        on image: CGImage, scale: CGFloat
+    ) -> CGImage? {
+        let margin = Int(44 * scale)
+        let width = image.width + margin * 2
+        let height = image.height + margin * 2
+        guard let ctx = CGContext(
+            data: nil, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: image.colorSpace ?? CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        // CG bottom-left space: negative height offset drops the shadow downward.
+        ctx.setShadow(
+            offset: CGSize(width: 0, height: -10 * scale),
+            blur: 28 * scale,
+            color: CGColor(gray: 0, alpha: 0.45))
+        ctx.draw(image, in: CGRect(
+            x: margin, y: margin, width: image.width, height: image.height))
+        return ctx.makeImage()
     }
 
     private func stillConfig() -> SCStreamConfiguration {
