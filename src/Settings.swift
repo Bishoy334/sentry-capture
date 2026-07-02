@@ -24,6 +24,7 @@ final class Settings: ObservableObject {
     @Published var playSound: Bool
     @Published var downscaleRetina: Bool
     @Published var showCursorInRecording: Bool
+    @Published var showClicksInRecording: Bool
     @Published var recordSystemAudio: Bool
     @Published var recordMicrophone: Bool
     @Published var videoFPS: Int
@@ -70,6 +71,7 @@ final class Settings: ObservableObject {
         playSound = d.object(forKey: "playSound") as? Bool ?? true
         downscaleRetina = d.object(forKey: "downscaleRetina") as? Bool ?? false
         showCursorInRecording = d.object(forKey: "showCursorInRecording") as? Bool ?? true
+        showClicksInRecording = d.object(forKey: "showClicksInRecording") as? Bool ?? false
         recordSystemAudio = d.object(forKey: "recordSystemAudio") as? Bool ?? true
         recordMicrophone = d.object(forKey: "recordMicrophone") as? Bool ?? false
         videoFPS = d.object(forKey: "videoFPS") as? Int ?? 60
@@ -113,6 +115,7 @@ final class Settings: ObservableObject {
         d.set(playSound, forKey: "playSound")
         d.set(downscaleRetina, forKey: "downscaleRetina")
         d.set(showCursorInRecording, forKey: "showCursorInRecording")
+        d.set(showClicksInRecording, forKey: "showClicksInRecording")
         d.set(recordSystemAudio, forKey: "recordSystemAudio")
         d.set(recordMicrophone, forKey: "recordMicrophone")
         d.set(videoFPS, forKey: "videoFPS")

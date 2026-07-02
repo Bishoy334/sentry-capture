@@ -188,6 +188,8 @@ final class RecordingController {
         config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
         config.queueDepth = 5
         config.showsCursor = settings.showCursorInRecording
+        // Native click rings (macOS 15+) — no event tap, no Accessibility.
+        config.showMouseClicks = settings.showClicksInRecording && settings.showCursorInRecording
         config.capturesAudio = settings.recordSystemAudio
         config.excludesCurrentProcessAudio = true
         let micOn = settings.recordMicrophone && micUsable

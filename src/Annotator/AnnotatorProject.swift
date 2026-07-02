@@ -13,6 +13,7 @@ struct AnnotatorProject {
     var scale: CGFloat
     var baseImage: CGImage
     var annotations: [AnnotatorAnnotation]
+    var background: AnnotatorBackgroundStyle?
 
     // MARK: File shape
 
@@ -21,6 +22,16 @@ struct AnnotatorProject {
         var scale: CGFloat
         var base: String
         var annotations: [Item]
+        var background: BackgroundItem?
+    }
+
+    private struct BackgroundItem: Codable {
+        var fillKind: String            // none | solid | gradient
+        var solid: [CGFloat]?
+        var gradientIndex: Int?
+        var padding: CGFloat
+        var cornerRadius: CGFloat
+        var shadow: Bool
     }
 
     private struct Item: Codable {
@@ -48,7 +59,8 @@ struct AnnotatorProject {
         let file = File(
             scale: scale,
             base: Self.baseFileName,
-            annotations: annotations.map(Self.item(from:)))
+            annotations: annotations.map(Self.item(from:)),
+            background: background.flatMap(Self.backgroundItem(from:)))
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         guard let json = try? encoder.encode(file) else { return false }
@@ -73,10 +85,47 @@ struct AnnotatorProject {
         return AnnotatorProject(
             scale: file.scale,
             baseImage: base,
-            annotations: file.annotations.map(annotation(from:)))
+            annotations: file.annotations.map(annotation(from:)),
+            background: file.background.flatMap(backgroundStyle(from:)))
     }
 
     // MARK: Mapping
+
+    private static func backgroundItem(from style: AnnotatorBackgroundStyle) -> BackgroundItem? {
+        guard style.isVisible else { return nil }
+        var item = BackgroundItem(
+            fillKind: "none", solid: nil, gradientIndex: nil,
+            padding: style.padding, cornerRadius: style.cornerRadius, shadow: style.shadow)
+        switch style.fill {
+        case .none:
+            return nil
+        case .solid(let colour):
+            let c = colour.usingColorSpace(.sRGB) ?? colour
+            item.fillKind = "solid"
+            item.solid = [c.redComponent, c.greenComponent, c.blueComponent, c.alphaComponent]
+        case .gradient(let index):
+            item.fillKind = "gradient"
+            item.gradientIndex = index
+        }
+        return item
+    }
+
+    private static func backgroundStyle(from item: BackgroundItem) -> AnnotatorBackgroundStyle? {
+        var style = AnnotatorBackgroundStyle(
+            fill: .none, padding: item.padding,
+            cornerRadius: item.cornerRadius, shadow: item.shadow)
+        switch item.fillKind {
+        case "solid":
+            guard let c = item.solid, c.count == 4 else { return nil }
+            style.fill = .solid(NSColor(srgbRed: c[0], green: c[1], blue: c[2], alpha: c[3]))
+        case "gradient":
+            guard let index = item.gradientIndex else { return nil }
+            style.fill = .gradient(index)
+        default:
+            return nil
+        }
+        return style
+    }
 
     private static func item(from a: AnnotatorAnnotation) -> Item {
         let c = a.colour.usingColorSpace(.sRGB) ?? a.colour

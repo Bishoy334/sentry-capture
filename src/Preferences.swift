@@ -251,6 +251,7 @@ private struct PrefsRecordingPane: View {
             }
             Section {
                 Toggle("Show cursor", isOn: $settings.showCursorInRecording)
+                Toggle("Highlight clicks", isOn: $settings.showClicksInRecording)
                 Toggle("Record system audio", isOn: $settings.recordSystemAudio)
                 Toggle("Record microphone", isOn: $settings.recordMicrophone)
             }

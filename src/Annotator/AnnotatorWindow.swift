@@ -20,6 +20,7 @@ final class AnnotatorController {
         }
         var editorStill = still
         var restored: [AnnotatorAnnotation] = []
+        var restoredBackground: AnnotatorBackgroundStyle?
         if let id = still.recordID,
            SentryStore.shared.loadManifest(for: id)?.annotations?.project != nil,
            let project = AnnotatorProject.load(from: SentryStore.shared.recordDirectory(for: id)) {
@@ -27,8 +28,11 @@ final class AnnotatorController {
                 image: project.baseImage, scale: project.scale, source: still.source,
                 screenRect: nil, origin: still.origin, recordID: id)
             restored = project.annotations
+            restoredBackground = project.background
         }
-        let editor = AnnotatorWindowController(still: editorStill, restoredAnnotations: restored)
+        let editor = AnnotatorWindowController(
+            still: editorStill, restoredAnnotations: restored,
+            restoredBackground: restoredBackground)
         editor.onClose = { [weak self, weak editor] in
             self?.editors.removeAll { $0 === editor }
         }
@@ -103,7 +107,11 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         ("Free", nil), ("1:1", 1), ("16:9", 16.0 / 9.0), ("4:3", 4.0 / 3.0), ("3:2", 3.0 / 2.0),
     ]
 
-    init(still: StillCapture, restoredAnnotations: [AnnotatorAnnotation] = []) {
+    init(
+        still: StillCapture,
+        restoredAnnotations: [AnnotatorAnnotation] = [],
+        restoredBackground: AnnotatorBackgroundStyle? = nil
+    ) {
         source = still.source
         origin = still.origin
         recordID = still.recordID
@@ -136,6 +144,9 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         sizeWindowToImage()
         refreshImageMeta()
         refreshChrome()
+        if let restoredBackground {
+            backgroundStyle = restoredBackground
+        }
     }
 
     func show() {
@@ -800,7 +811,8 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             let project = AnnotatorProject(
                 scale: canvas.imageScale,
                 baseImage: canvas.baseImage,
-                annotations: canvas.annotations)
+                annotations: canvas.annotations,
+                background: backgroundStyle)
             if project.write(in: SentryStore.shared.recordDirectory(for: recordID)) {
                 SentryStore.shared.amendManifest(id: recordID) {
                     $0.annotations = SentryManifest.Annotations(
