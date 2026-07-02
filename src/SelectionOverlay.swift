@@ -978,6 +978,7 @@ private final class AllInOneStrip: NSPanel {
             .withSymbolConfiguration(.init(pointSize: 15, weight: .medium))
         button.title = label
         button.font = .systemFont(ofSize: 9.5, weight: .medium)
+        button.alignment = .center   // imageAbove keeps natural (left) title alignment otherwise
         button.contentTintColor = .white
         button.toolTip = label
         button.tag = tag
