@@ -1,5 +1,27 @@
 import AppKit
 
+/// Shared chrome for the floating HUD family (control strips, toasts, QAO
+/// cards) — one radius, material and border so every overlay reads as the
+/// same app.
+@MainActor
+enum HUDStyle {
+    static let cornerRadius: CGFloat = 12
+    static let borderColour = NSColor.white.withAlphaComponent(0.12)
+
+    static func card(appearance: NSAppearance.Name? = nil) -> NSVisualEffectView {
+        let card = NSVisualEffectView()
+        card.material = .hudWindow
+        card.state = .active
+        if let appearance { card.appearance = NSAppearance(named: appearance) }
+        card.wantsLayer = true
+        card.layer?.cornerRadius = cornerRadius
+        card.layer?.masksToBounds = true
+        card.layer?.borderWidth = 1
+        card.layer?.borderColor = borderColour.cgColor
+        return card
+    }
+}
+
 /// Small transient pill HUD ("Text copied", errors). Non-activating, floats
 /// over everything, fades out on its own.
 @MainActor
@@ -27,12 +49,7 @@ enum Toast {
         }
         stack.addArrangedSubview(label)
 
-        let container = NSVisualEffectView()
-        container.material = .hudWindow
-        container.state = .active
-        container.wantsLayer = true
-        container.layer?.cornerRadius = 10
-        container.layer?.masksToBounds = true
+        let container = HUDStyle.card()
         container.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.4).cgColor
 
         stack.translatesAutoresizingMaskIntoConstraints = false

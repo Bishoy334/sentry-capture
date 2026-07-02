@@ -279,10 +279,10 @@ private final class QAOCardView: NSView, NSDraggingSource {
         effect.blendingMode = .behindWindow
         effect.state = .active
         effect.wantsLayer = true
-        effect.layer?.cornerRadius = 10
+        effect.layer?.cornerRadius = HUDStyle.cornerRadius
         effect.layer?.masksToBounds = true
         effect.layer?.borderWidth = 1
-        effect.layer?.borderColor = NSColor.white.withAlphaComponent(0.1).cgColor
+        effect.layer?.borderColor = HUDStyle.borderColour.cgColor
         addSubview(effect)
 
         // Thumbnail sits above the caption band (unflipped view: y up).

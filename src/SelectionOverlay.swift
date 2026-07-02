@@ -998,6 +998,7 @@ private final class AllInOneStrip: NSPanel, NSTextFieldDelegate {
     /// Fired when field editing ends so the overlay can take key back.
     var onEditingEnded: (() -> Void)?
     private var selectionButtons: [NSButton] = []
+    private var captureButton: NSButton?
     private var widthField: NSTextField!
     private var heightField: NSTextField!
 
@@ -1052,23 +1053,21 @@ private final class AllInOneStrip: NSPanel, NSTextFieldDelegate {
             let button = stripButton(symbol: entry.symbol, label: entry.label, tag: i)
             stack.addArrangedSubview(button)
             if entry.needsSelection { selectionButtons.append(button) }
+            if entry.action == .captureArea {
+                button.toolTip = "\(entry.label) (⏎)"
+                captureButton = button
+            }
         }
         let divider = stripDivider()
         stack.addArrangedSubview(divider)
         stack.setCustomSpacing(8, after: stack.arrangedSubviews[stack.arrangedSubviews.count - 2])
         stack.setCustomSpacing(8, after: divider)
         let cancel = stripButton(symbol: "xmark", label: "Cancel", tag: entries.count)
+        cancel.toolTip = "Cancel (Esc)"
         stack.addArrangedSubview(cancel)
         self.entriesActions = entries.map(\.action)
 
-        let card = NSVisualEffectView()
-        card.material = .hudWindow
-        card.state = .active
-        card.wantsLayer = true
-        card.layer?.cornerRadius = 12
-        card.layer?.masksToBounds = true
-        card.layer?.borderWidth = 1
-        card.layer?.borderColor = NSColor.white.withAlphaComponent(0.12).cgColor
+        let card = HUDStyle.card()
         stack.translatesAutoresizingMaskIntoConstraints = false
         card.addSubview(stack)
         NSLayoutConstraint.activate([
@@ -1145,7 +1144,7 @@ private final class AllInOneStrip: NSPanel, NSTextFieldDelegate {
     }
 
     private func stripButton(symbol: String, label: String, tag: Int) -> NSButton {
-        let button = NSButton()
+        let button = StripHoverButton()
         button.isBordered = false
         button.setButtonType(.momentaryChange)
         button.imagePosition = .imageAbove
@@ -1170,6 +1169,8 @@ private final class AllInOneStrip: NSPanel, NSTextFieldDelegate {
             button.isEnabled = available
             button.alphaValue = available ? 1 : 0.35
         }
+        // Capture is the strip's default action (Return) — read as primary.
+        captureButton?.contentTintColor = available ? .controlAccentColor : .white
     }
 
     @objc private func buttonTapped(_ sender: NSButton) {
@@ -1183,4 +1184,35 @@ private final class AllInOneStrip: NSPanel, NSTextFieldDelegate {
     // Key-capable for the size fields; becomesKeyOnlyIfNeeded means only a
     // field click takes key — the action buttons never steal it.
     override var canBecomeKey: Bool { true }
+}
+
+/// Strip button with a soft hover wash — plain glyph rows read as labels
+/// until something responds to the pointer.
+@MainActor
+private final class StripHoverButton: NSButton {
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.cornerRadius = 7
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    override func updateTrackingAreas() {
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(
+            rect: .zero,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self, userInfo: nil))
+        super.updateTrackingAreas()
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        guard isEnabled else { return }
+        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.12).cgColor
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        layer?.backgroundColor = nil
+    }
 }

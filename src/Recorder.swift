@@ -715,17 +715,9 @@ private final class RecorderControlStrip: NSPanel {
         stack.spacing = 8
         stack.edgeInsets = NSEdgeInsets(top: 9, left: 14, bottom: 9, right: 12)
 
-        let card = NSVisualEffectView()
-        card.material = .hudWindow
-        card.state = .active
-        // The HUD card stays dark regardless of the system appearance; pin the
-        // effective appearance so label colours resolve for dark.
-        card.appearance = NSAppearance(named: .vibrantDark)
-        card.wantsLayer = true
-        card.layer?.cornerRadius = 10
-        card.layer?.masksToBounds = true
-        card.layer?.borderWidth = 1
-        card.layer?.borderColor = NSColor.white.withAlphaComponent(0.1).cgColor
+        // Pinned dark appearance so label colours resolve for dark regardless
+        // of the system theme.
+        let card = HUDStyle.card(appearance: .vibrantDark)
 
         stack.translatesAutoresizingMaskIntoConstraints = false
         card.addSubview(stack)
