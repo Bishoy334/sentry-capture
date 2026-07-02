@@ -230,6 +230,10 @@ private final class QAOCardView: NSView, NSDraggingSource {
 
     private let scrim = QAOScrimView()
     private var saveButton: QAOIconButton?
+    private let captionName = NSTextField(labelWithString: "")
+    private let captionMeta = NSTextField(labelWithString: "")
+    private var videoMetaText: String?
+    private static let captionHeight: CGFloat = 22
     private var mouseDownEvent: NSEvent?
     private var didDrag = false
     /// Drag payload, encoded off-main right after the card appears — a
@@ -248,7 +252,7 @@ private final class QAOCardView: NSView, NSDraggingSource {
             height = width * thumbnail.size.height / thumbnail.size.width
         }
         height = min(max(height, 70), 170)
-        super.init(frame: NSRect(x: 0, y: 0, width: width, height: height))
+        super.init(frame: NSRect(x: 0, y: 0, width: width, height: height + Self.captionHeight))
         build(video: video)
 
         if case .still(let still) = item.payload {
@@ -281,7 +285,11 @@ private final class QAOCardView: NSView, NSDraggingSource {
         effect.layer?.borderColor = NSColor.white.withAlphaComponent(0.1).cgColor
         addSubview(effect)
 
-        let imageView = QAOStaticImageView(frame: bounds)
+        // Thumbnail sits above the caption band (unflipped view: y up).
+        let thumbArea = NSRect(
+            x: 0, y: Self.captionHeight,
+            width: bounds.width, height: bounds.height - Self.captionHeight)
+        let imageView = QAOStaticImageView(frame: thumbArea)
         imageView.autoresizingMask = [.width, .height]
         imageView.imageScaling = .scaleProportionallyUpOrDown
         if let thumbnail {
@@ -296,20 +304,14 @@ private final class QAOCardView: NSView, NSDraggingSource {
         effect.addSubview(imageView)
 
         if let video {
-            var x: CGFloat = 8
-            if video.durationSeconds > 0 {
-                let chip = QAOChipView(text: qaoDurationString(video.durationSeconds))
-                chip.setFrameOrigin(NSPoint(x: x, y: 8))
-                effect.addSubview(chip)
-                x += chip.frame.width + 6
-            }
-            let format = QAOChipView(text: video.formatLabel)
-            format.setFrameOrigin(NSPoint(x: x, y: 8))
-            effect.addSubview(format)
+            var meta: [String] = []
+            if video.durationSeconds > 0 { meta.append(qaoDurationString(video.durationSeconds)) }
+            meta.append(video.formatLabel)
+            videoMetaText = meta.joined(separator: " · ")
         }
+        buildCaption(in: effect)
 
-        scrim.frame = bounds
-        scrim.autoresizingMask = [.width, .height]
+        scrim.frame = thumbArea
         scrim.wantsLayer = true
         scrim.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.35).cgColor
         scrim.alphaValue = 0
@@ -339,7 +341,8 @@ private final class QAOCardView: NSView, NSDraggingSource {
         let total = CGFloat(buttons.count) * side + CGFloat(buttons.count - 1) * gap
         var x = (bounds.width - total) / 2
         for button in buttons {
-            button.frame = NSRect(x: x, y: (bounds.height - side) / 2, width: side, height: side)
+            button.frame = NSRect(
+                x: x, y: (scrim.bounds.height - side) / 2, width: side, height: side)
             button.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin, .maxYMargin]
             scrim.addSubview(button)
             x += side + gap
@@ -348,9 +351,51 @@ private final class QAOCardView: NSView, NSDraggingSource {
         let close = QAOIconButton(
             symbol: "xmark", tooltip: "Close", target: self, action: #selector(closeAction),
             size: 20, symbolSize: 10, cornerRadius: 10)
-        close.frame = NSRect(x: bounds.width - 26, y: bounds.height - 26, width: 20, height: 20)
+        close.frame = NSRect(
+            x: scrim.bounds.width - 26, y: scrim.bounds.height - 26, width: 20, height: 20)
         close.autoresizingMask = [.minXMargin, .minYMargin]
         scrim.addSubview(close)
+    }
+
+    /// Bottom band: filename (or save state) left, dimensions/duration right —
+    /// what this card is, without hovering.
+    private func buildCaption(in effect: NSView) {
+        let band = QAOCaptionBand(frame: NSRect(
+            x: 0, y: 0, width: bounds.width, height: Self.captionHeight))
+        band.autoresizingMask = [.width, .maxYMargin]
+
+        captionName.font = .systemFont(ofSize: 10, weight: .medium)
+        captionName.textColor = NSColor.white.withAlphaComponent(0.85)
+        captionName.lineBreakMode = .byTruncatingMiddle
+        captionMeta.font = .monospacedDigitSystemFont(ofSize: 9.5, weight: .regular)
+        captionMeta.textColor = NSColor.white.withAlphaComponent(0.55)
+        captionMeta.alignment = .right
+        for label in [captionName, captionMeta] {
+            label.translatesAutoresizingMaskIntoConstraints = false
+            band.addSubview(label)
+        }
+        captionMeta.setContentCompressionResistancePriority(.required, for: .horizontal)
+        NSLayoutConstraint.activate([
+            captionName.leadingAnchor.constraint(equalTo: band.leadingAnchor, constant: 8),
+            captionName.centerYAnchor.constraint(equalTo: band.centerYAnchor),
+            captionMeta.leadingAnchor.constraint(
+                greaterThanOrEqualTo: captionName.trailingAnchor, constant: 6),
+            captionMeta.trailingAnchor.constraint(equalTo: band.trailingAnchor, constant: -8),
+            captionMeta.centerYAnchor.constraint(equalTo: band.centerYAnchor),
+        ])
+        // Inside the blur view so the card's rounded-corner mask clips it.
+        effect.addSubview(band)
+        refreshCaption()
+    }
+
+    private func refreshCaption() {
+        captionName.stringValue = item.fileURL?.lastPathComponent ?? "Not saved yet"
+        switch item.payload {
+        case .still(let still):
+            captionMeta.stringValue = "\(still.image.width)×\(still.image.height)"
+        case .video:
+            captionMeta.stringValue = videoMetaText ?? ""
+        }
     }
 
     // MARK: Hover
@@ -537,6 +582,7 @@ private final class QAOCardView: NSView, NSDraggingSource {
             item.fileURL = result.url
             item.recordID = result.recordID
             saveButton?.setSymbol("magnifyingglass", tooltip: "Reveal in Finder")
+            refreshCaption()
             Toast.show("Saved", symbol: "arrow.down.circle")
         }
     }
@@ -692,18 +738,13 @@ private final class QAOStaticImageView: NSImageView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
-private final class QAOChipView: NSView {
-    init(text: String) {
-        let label = NSTextField(labelWithString: text)
-        label.font = .monospacedDigitSystemFont(ofSize: 10.5, weight: .semibold)
-        label.textColor = .white
-        label.sizeToFit()
-        super.init(frame: NSRect(x: 0, y: 0, width: label.frame.width + 10, height: label.frame.height + 5))
+/// Caption strip along the card's bottom edge; clicks and drags fall through
+/// to the card.
+private final class QAOCaptionBand: NSView {
+    override init(frame: NSRect) {
+        super.init(frame: frame)
         wantsLayer = true
-        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.55).cgColor
-        layer?.cornerRadius = 4
-        label.setFrameOrigin(NSPoint(x: 5, y: 2.5))
-        addSubview(label)
+        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.35).cgColor
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
