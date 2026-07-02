@@ -157,6 +157,28 @@ final class SentryStore {
         return mediaURL
     }
 
+    /// Replaces a recording's media with a trim-editor export and stamps
+    /// modifiedAt — the video counterpart of updateStillMedia.
+    func updateVideoMedia(recordID: String, tempURL: URL, durationSeconds: Double?) -> URL? {
+        let dir = recordDirectory(for: recordID)
+        guard var manifest = loadManifest(in: dir) else { return nil }
+        let mediaURL = dir.appendingPathComponent(manifest.media.path)
+        do {
+            _ = try FileManager.default.replaceItemAt(mediaURL, withItemAt: tempURL)
+        } catch {
+            NSLog("record video update failed: \(error)")
+            return nil
+        }
+        manifest.modifiedAt = Self.timestamp()
+        manifest.media.bytes =
+            (try? FileManager.default.attributesOfItem(atPath: mediaURL.path)[.size] as? Int) ?? 0
+        manifest.durationSeconds = durationSeconds
+        manifest.hash = nil // stale until the background pass recomputes
+        writeManifest(manifest, in: dir)
+        hashFileInBackground(id: recordID, mediaURL: mediaURL)
+        return mediaURL
+    }
+
     // MARK: Manifest IO
 
     func recordDirectory(for id: String) -> URL {

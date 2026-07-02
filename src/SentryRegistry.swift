@@ -104,7 +104,8 @@ enum SentryRegistry {
         }
     }
 
-    /// Open a record for editing (stills) or reveal it (videos).
+    /// Open a record for editing (stills → annotator, MP4s → video editor)
+    /// or reveal it (GIFs).
     static func openRecord(id: String) {
         guard let manifest = SentryStore.shared.loadManifest(for: id) else {
             Toast.show("Capture not found", symbol: "questionmark.folder")
@@ -128,6 +129,8 @@ enum SentryRegistry {
                 image: image, scale: scale, source: .area,
                 screenRect: nil, origin: nil, recordID: id)
             AnnotatorController.shared.open(still)
+        } else if manifest.media.type == "video/mp4" {
+            VideoEditorController.shared.open(recordID: id)
         } else {
             NSWorkspace.shared.activateFileViewerSelecting([mediaURL])
         }

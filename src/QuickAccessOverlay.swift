@@ -221,6 +221,11 @@ private final class QAOCardView: NSView, NSDraggingSource {
     private var item: DeliveredCapture
     private let thumbnail: NSImage?
     private let isStill: Bool
+    /// MP4 recordings with a backing record open in the trim editor.
+    private var isEditableVideo: Bool {
+        guard case .video(let video) = item.payload else { return false }
+        return !video.isGIF && item.recordID != nil
+    }
     private var displayImage: NSImage?
 
     private let scrim = QAOScrimView()
@@ -325,6 +330,10 @@ private final class QAOCardView: NSView, NSDraggingSource {
             buttons.append(QAOIconButton(
                 symbol: "pin", tooltip: "Pin", target: self, action: #selector(pinAction)))
         }
+        if isEditableVideo {
+            buttons.append(QAOIconButton(
+                symbol: "scissors", tooltip: "Edit", target: self, action: #selector(editVideoAction)))
+        }
         let side: CGFloat = 28
         let gap: CGFloat = 10
         let total = CGFloat(buttons.count) * side + CGFloat(buttons.count - 1) * gap
@@ -389,7 +398,11 @@ private final class QAOCardView: NSView, NSDraggingSource {
             OutputRouter.shared.openAnnotator(still)
             onDismiss?()
         case .video:
-            if let url = item.fileURL { NSWorkspace.shared.open(url) }
+            if isEditableVideo, let recordID = item.recordID {
+                VideoEditorController.shared.open(recordID: recordID)
+            } else if let url = item.fileURL {
+                NSWorkspace.shared.open(url)
+            }
         }
     }
 
@@ -472,6 +485,9 @@ private final class QAOCardView: NSView, NSDraggingSource {
             add("Pin", #selector(pinAction))
             add("Copy Text", #selector(copyTextAction))
         }
+        if isEditableVideo {
+            add("Edit", #selector(editVideoAction))
+        }
         if let recordID = item.recordID {
             let destinations = SentryRegistry.destinations()
             if !destinations.isEmpty {
@@ -534,6 +550,12 @@ private final class QAOCardView: NSView, NSDraggingSource {
     @objc private func pinAction() {
         guard case .still(let still) = item.payload else { return }
         OutputRouter.shared.pin(still)
+        onDismiss?()
+    }
+
+    @objc private func editVideoAction() {
+        guard let recordID = item.recordID else { return }
+        VideoEditorController.shared.open(recordID: recordID)
         onDismiss?()
     }
 
