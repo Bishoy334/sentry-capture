@@ -311,7 +311,7 @@ private final class ColourPickerView: NSView {
                 x: p.x - sourceSide / 2,
                 y: image.size.height - p.y - sourceSide / 2,
                 width: sourceSide, height: sourceSide),
-            operation: .sourceOver, fraction: 1, respectFlipped: false,
+            operation: .sourceOver, fraction: 1, respectFlipped: true,
             hints: [.interpolation: NSNumber(value: 1)])
         NSGraphicsContext.restoreGraphicsState()
 

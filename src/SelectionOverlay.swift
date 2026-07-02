@@ -801,7 +801,7 @@ private final class SelectionOverlayView: NSView {
             from: NSRect(
                 x: source.minX / scale, y: source.minY / scale,
                 width: source.width / scale, height: source.height / scale),
-            operation: .sourceOver, fraction: 1, respectFlipped: false,
+            operation: .sourceOver, fraction: 1, respectFlipped: true,
             hints: [.interpolation: NSNumber(value: 1)])
         NSGraphicsContext.restoreGraphicsState()
 
