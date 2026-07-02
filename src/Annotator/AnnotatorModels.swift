@@ -116,7 +116,15 @@ enum AnnotatorTextStyle: Int, Equatable, Codable, CaseIterable {
 }
 
 enum AnnotatorKind: String, Equatable, Codable {
-    case arrow, line, rect, filledRect, ellipse, freehand, highlighter, text, counter, redact, spotlight
+    case arrow, line, rect, filledRect, ellipse, freehand, highlighter, text, counter, redact, spotlight, image
+}
+
+/// Dropped-in images ride annotations as a reference type so the flat value
+/// struct stays cheaply copyable (undo snapshots share the bitmap).
+final class AnnotatorImageRef: Equatable {
+    let image: CGImage
+    init(image: CGImage) { self.image = image }
+    static func == (lhs: AnnotatorImageRef, rhs: AnnotatorImageRef) -> Bool { lhs === rhs }
 }
 
 /// The "make it pretty" wrapper: padded, rounded, shadowed capture on a
@@ -200,6 +208,7 @@ struct AnnotatorAnnotation: Identifiable, Equatable {
     var number: Int = 0                 // counter badge
     var redactStyle: AnnotatorRedactStyle = .pixelate
     var arrowStyle: AnnotatorArrowStyle = .straight
+    var imageRef: AnnotatorImageRef?   // .image kind
 }
 
 // MARK: - Geometry
@@ -263,6 +272,19 @@ enum AnnotatorGeo {
         guard width > 24, (maxY - minY) < max(14, width * 0.15) else { return nil }
         let mean = ys.reduce(0, +) / CGFloat(ys.count)
         return [CGPoint(x: first.x, y: mean), CGPoint(x: last.x, y: mean)]
+    }
+
+    /// The canvas is the base image grown to cover every annotation (plus a
+    /// stroke margin) — the one rule both the live canvas and the exporter
+    /// use, so what you see beyond the edge is what exports.
+    static func canvasBounds(imageSize: NSSize, annotations: [AnnotatorAnnotation]) -> CGRect {
+        var bounds = CGRect(origin: .zero, size: imageSize)
+        for a in annotations {
+            let b = self.bounds(of: a).insetBy(dx: -a.lineWidth - 6, dy: -a.lineWidth - 6)
+            guard !b.isNull, !b.isEmpty else { continue }
+            bounds = bounds.union(b)
+        }
+        return bounds.integral
     }
 
     static func translate(_ a: AnnotatorAnnotation, by d: CGPoint) -> AnnotatorAnnotation {
@@ -339,7 +361,7 @@ enum AnnotatorHit {
         case .highlighter:
             guard let path = AnnotatorPaths.outline(a) else { return false }
             return fatContains(path, width: AnnotatorRender.highlighterWidth, point: p)
-        case .filledRect, .redact, .spotlight:
+        case .filledRect, .redact, .spotlight, .image:
             return a.rect.insetBy(dx: -4, dy: -4).contains(p)
         case .text:
             return a.rect.insetBy(dx: -6, dy: -6).contains(p)
@@ -366,7 +388,7 @@ enum AnnotatorHit {
         switch a.kind {
         case .line, .arrow:
             return [(.lineStart, a.start), (.lineEnd, a.end)]
-        case .rect, .filledRect, .ellipse, .redact, .text, .spotlight:
+        case .rect, .filledRect, .ellipse, .redact, .text, .spotlight, .image:
             return rectHandles(a.rect)
         case .freehand, .highlighter, .counter:
             return []   // move-only
@@ -541,18 +563,22 @@ enum AnnotatorRender {
             // Rendered as a shared dim layer (drawSpotlightDim) so multiple
             // spotlights punch holes in ONE veil — nothing to draw per item.
             break
+        case .image:
+            if let ref = a.imageRef {
+                blitFlipped(ref.image, in: a.rect, ctx: ctx, canvasHeight: canvasHeight)
+            }
         }
     }
 
     /// One 45% veil with a hole per spotlight. Runs after redactions and
     /// before every other annotation, so arrows/text stay bright.
     static func drawSpotlightDim(
-        spotlights: [CGRect], canvasSize: CGSize, in ctx: CGContext
+        spotlights: [CGRect], over veil: CGRect, in ctx: CGContext
     ) {
         guard !spotlights.isEmpty else { return }
         ctx.saveGState()
         ctx.setFillColor(NSColor.black.withAlphaComponent(0.45).cgColor)
-        ctx.addRect(CGRect(origin: .zero, size: canvasSize))
+        ctx.addRect(veil)
         for rect in spotlights {
             ctx.addRect(rect)
         }
@@ -631,40 +657,48 @@ enum AnnotatorRender {
 
     // MARK: Export composite
 
-    /// Flatten base + annotations at native pixel scale. The CTM is scaled to
-    /// points then flipped to top-left, so the exact canvas draw routine runs
-    /// unmodified (per research B5).
+    /// Flatten base + annotations at native pixel scale, sized to the full
+    /// canvas (annotations may spill past the image — margin exports as
+    /// transparency). The CTM is scaled to points, flipped to top-left, and
+    /// shifted so image-space coords land correctly; the exact canvas draw
+    /// routine then runs unmodified (per research B5).
     static func composite(
         base: CGImage,
         scale: CGFloat,
         annotations: [AnnotatorAnnotation],
         patch: (AnnotatorAnnotation) -> (rect: CGRect, image: CGImage)?
     ) -> CGImage? {
-        let pointH = CGFloat(base.height) / scale
+        let imageSize = NSSize(
+            width: CGFloat(base.width) / scale, height: CGFloat(base.height) / scale)
+        let canvas = AnnotatorGeo.canvasBounds(imageSize: imageSize, annotations: annotations)
         guard let ctx = CGContext(
-            data: nil, width: base.width, height: base.height,
+            data: nil,
+            width: Int(canvas.width * scale), height: Int(canvas.height * scale),
             bitsPerComponent: 8, bytesPerRow: 0,
             space: base.colorSpace ?? CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
                 | CGBitmapInfo.byteOrder32Little.rawValue
         ) else { return nil }
         ctx.interpolationQuality = .high
-        ctx.draw(base, in: CGRect(x: 0, y: 0, width: base.width, height: base.height))
         ctx.scaleBy(x: scale, y: scale)
-        ctx.translateBy(x: 0, y: pointH)
+        ctx.translateBy(x: 0, y: canvas.height)
         ctx.scaleBy(x: 1, y: -1)
+        ctx.translateBy(x: -canvas.minX, y: -canvas.minY)
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+        blitFlipped(
+            base, in: CGRect(origin: .zero, size: imageSize),
+            ctx: ctx, canvasHeight: imageSize.height)
         for a in annotations where a.kind == .redact {
-            draw(a, in: ctx, canvasHeight: pointH, redactPatch: patch(a))
+            draw(a, in: ctx, canvasHeight: imageSize.height, redactPatch: patch(a))
         }
         // Spotlights dim above redactions and below everything else.
         drawSpotlightDim(
             spotlights: annotations.filter { $0.kind == .spotlight }.map(\.rect),
-            canvasSize: CGSize(width: CGFloat(base.width) / scale, height: pointH),
+            over: canvas,
             in: ctx)
         for a in annotations where a.kind != .redact && a.kind != .spotlight {
-            draw(a, in: ctx, canvasHeight: pointH, redactPatch: nil)
+            draw(a, in: ctx, canvasHeight: imageSize.height, redactPatch: nil)
         }
         NSGraphicsContext.restoreGraphicsState()
         return ctx.makeImage()

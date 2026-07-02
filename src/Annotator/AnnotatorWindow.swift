@@ -140,6 +140,9 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             self?.refreshImageMeta()
             self?.layoutBackdrop()
         }
+        canvas.onCanvasResized = { [weak self] in
+            self?.layoutBackdrop()
+        }
 
         sizeWindowToImage()
         refreshImageMeta()
@@ -408,7 +411,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     }
 
     private func layoutBackdrop() {
-        let pt = canvas.pointSize
+        let pt = canvas.canvasPointSize
         let pad = backgroundStyle.isVisible ? backgroundStyle.padding : 0
         backdrop.style = backgroundStyle
         backdrop.setFrameSize(NSSize(width: pt.width + pad * 2, height: pt.height + pad * 2))

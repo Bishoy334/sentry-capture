@@ -103,6 +103,49 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         NSSize(width: CGFloat(baseImage.width) / imageScale, height: CGFloat(baseImage.height) / imageScale)
     }
 
+    /// How far annotations spill past the base image (canvas expansion).
+    /// Model coordinates stay image-relative; only the view-space mapping
+    /// (draw CTM + mouse conversion) shifts by the origin.
+    private(set) var canvasRect: CGRect = .zero
+    var canvasPointSize: NSSize { canvasRect.size }
+    private var imageOriginInView: CGPoint {
+        CGPoint(x: -canvasRect.minX, y: -canvasRect.minY)
+    }
+
+    /// Canvas frame changed (expansion) — the window relays out the backdrop.
+    var onCanvasResized: (() -> Void)?
+
+    /// Grow-only during live gestures (no jitter); exact fit at gesture end.
+    func refreshCanvasBounds(during liveGesture: Bool = false) {
+        var target = AnnotatorGeo.canvasBounds(imageSize: pointSize, annotations: annotations)
+        if liveGesture {
+            target = target.union(canvasRect)
+        }
+        guard target != canvasRect else { return }
+        let old = canvasRect
+        canvasRect = target
+        setFrameSize(target.size)
+        needsDisplay = true
+        onCanvasResized?()
+        // Keep the visible content stable when the canvas grows left/up.
+        if let scrollView = enclosingScrollView {
+            let dx = old.minX - target.minX
+            let dy = old.minY - target.minY
+            if dx != 0 || dy != 0 {
+                var origin = scrollView.contentView.bounds.origin
+                origin.x += dx * scrollView.magnification
+                origin.y += dy * scrollView.magnification
+                scrollView.contentView.scroll(to: origin)
+                scrollView.reflectScrolledClipView(scrollView.contentView)
+            }
+        }
+    }
+
+    private func modelPoint(_ event: NSEvent) -> CGPoint {
+        let p = convert(event.locationInWindow, from: nil)
+        return CGPoint(x: p.x - imageOriginInView.x, y: p.y - imageOriginInView.y)
+    }
+
     private var zoom: CGFloat {
         max(enclosingScrollView?.magnification ?? 1, 0.01)
     }
@@ -114,9 +157,11 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         imageScale = still.scale
         redactRenderer = AnnotatorRedactRenderer(base: still.image, scale: still.scale)
         super.init(frame: NSRect(origin: .zero, size: .zero))
+        canvasRect = CGRect(origin: .zero, size: pointSize)
         setFrameSize(pointSize)
         wantsLayer = true
         layerContentsRedrawPolicy = .onSetNeedsDisplay
+        registerForDraggedTypes([.fileURL, .png, .tiff])
     }
 
     @available(*, unavailable)
@@ -139,6 +184,15 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
     override func draw(_ dirtyRect: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
         let h = pointSize.height
+        // Expansion margin reads as transparency (it exports that way).
+        if canvasRect != CGRect(origin: .zero, size: pointSize) {
+            drawTransparencyChecker(in: ctx, rect: bounds)
+        }
+        // Everything below draws in image-relative model coordinates.
+        ctx.saveGState()
+        ctx.translateBy(x: imageOriginInView.x, y: imageOriginInView.y)
+        defer { ctx.restoreGState() }
+        let dirtyRect = dirtyRect.offsetBy(dx: -imageOriginInView.x, dy: -imageOriginInView.y)
         // CG clips the blit to dirtyRect — a 40000 px scrolling capture only
         // decodes the visible band.
         AnnotatorRender.blitFlipped(
@@ -153,7 +207,7 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         // veil spans the whole canvas, so it redraws whenever any spotlight
         // exists and the dirty rect intersects anything.
         let spotlights = annotations.filter { $0.kind == .spotlight }.map(\.rect)
-        AnnotatorRender.drawSpotlightDim(spotlights: spotlights, canvasSize: pointSize, in: ctx)
+        AnnotatorRender.drawSpotlightDim(spotlights: spotlights, over: canvasRect, in: ctx)
         for a in annotations where a.kind != .redact && a.kind != .spotlight {
             guard a.id != editingTextID,
                   AnnotatorGeo.displayBounds(of: a).intersects(dirtyRect) else { continue }
@@ -189,6 +243,60 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         ctx.setLineDash(phase: 0, lengths: [3 / zoom, 2 / zoom])
         ctx.stroke(AnnotatorGeo.bounds(of: a).insetBy(dx: -3, dy: -3))
         ctx.restoreGState()
+    }
+
+    /// Classic transparency checker over the expansion margin — the base
+    /// image draws over the middle, so only the margin shows through.
+    private func drawTransparencyChecker(in ctx: CGContext, rect: NSRect) {
+        let cell: CGFloat = 8
+        ctx.saveGState()
+        ctx.clip(to: rect)
+        ctx.setFillColor(NSColor(white: 0.5, alpha: 0.10).cgColor)
+        ctx.fill(rect)
+        ctx.setFillColor(NSColor(white: 0.5, alpha: 0.18).cgColor)
+        let x0 = Int(floor(rect.minX / cell)), x1 = Int(ceil(rect.maxX / cell))
+        let y0 = Int(floor(rect.minY / cell)), y1 = Int(ceil(rect.maxY / cell))
+        for gy in y0...y1 {
+            for gx in x0...x1 where (gx + gy) % 2 == 0 {
+                ctx.fill(CGRect(x: CGFloat(gx) * cell, y: CGFloat(gy) * cell, width: cell, height: cell))
+            }
+        }
+        ctx.restoreGState()
+    }
+
+    // MARK: Image drop (multi-image combine)
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        NSImage.canInit(with: sender.draggingPasteboard) ? .copy : []
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard let dropped = NSImage(pasteboard: sender.draggingPasteboard),
+              let cg = dropped.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        else { return false }
+        let viewPoint = convert(sender.draggingLocation, from: nil)
+        let p = CGPoint(
+            x: viewPoint.x - imageOriginInView.x,
+            y: viewPoint.y - imageOriginInView.y)
+        let pre = snapshot()
+        var a = AnnotatorAnnotation(kind: .image)
+        a.imageRef = AnnotatorImageRef(image: cg)
+        var w = CGFloat(cg.width) / imageScale
+        var h = CGFloat(cg.height) / imageScale
+        let cap = max(pointSize.width, pointSize.height) * 0.6
+        if max(w, h) > cap {
+            let f = cap / max(w, h)
+            w *= f
+            h *= f
+        }
+        a.rect = CGRect(x: p.x - w / 2, y: p.y - h / 2, width: w, height: h)
+        annotations.append(a)
+        setSelected(a.id)
+        refreshCanvasBounds()
+        setNeedsDisplay(AnnotatorGeo.displayBounds(of: a))
+        registerUndo(pre, name: "Add Image")
+        onStateChange?()
+        return true
     }
 
     private func cachedPatch(for a: AnnotatorAnnotation) -> (rect: CGRect, image: CGImage)? {
@@ -354,7 +462,7 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
             window?.makeFirstResponder(self)
             return
         }
-        let p = convert(event.locationInWindow, from: nil)
+        let p = modelPoint(event)
         preGesture = snapshot()
 
         if cropActive {
@@ -479,7 +587,7 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
     }
 
     override func mouseDragged(with event: NSEvent) {
-        let p = convert(event.locationInWindow, from: nil)
+        let p = modelPoint(event)
         switch drag {
         case .none:
             break
@@ -526,6 +634,12 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
             let before = marqueeRect
             marqueeRect = AnnotatorGeo.rect(from: anchor, to: p)
             setNeedsDisplay(before.union(marqueeRect).insetBy(dx: -2, dy: -2))
+        }
+        switch drag {
+        case .drawRect, .drawLine, .freehand, .move, .resize:
+            refreshCanvasBounds(during: true)
+        default:
+            break
         }
     }
 
@@ -585,6 +699,7 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
             break
         }
         finishGesture(name: gestureName())
+        refreshCanvasBounds()
         // A big redact drew a placeholder during the drag — with the gesture
         // over, redraw so the real patch renders.
         if case .drawRect(let id, _) = drag, let a = annotation(id), a.kind == .redact {
@@ -613,7 +728,7 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
     // MARK: Context menu
 
     override func menu(for event: NSEvent) -> NSMenu? {
-        let p = convert(event.locationInWindow, from: nil)
+        let p = modelPoint(event)
         guard let hit = annotations.reversed().first(where: { AnnotatorHit.hitTest($0, at: p) })
         else { return nil }
         if !selectedIDs.contains(hit.id) { setSelected(hit.id) }
@@ -678,6 +793,7 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         for id in selectedIDs {
             update(id) { $0 = AnnotatorGeo.translate($0, by: CGPoint(x: dx * step, y: dy * step)) }
         }
+        refreshCanvasBounds()
         registerUndo(pre, name: "Nudge")
     }
 
@@ -686,6 +802,7 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         let pre = snapshot()
         for id in selectedIDs { removeAnnotation(id) }
         setSelected(nil)
+        refreshCanvasBounds()
         registerUndo(pre, name: "Delete")
     }
 
@@ -703,6 +820,7 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         annotations.append(contentsOf: copies)
         renumberCounters()
         setSelection(Set(copies.map(\.id)), primary: copies.last?.id)
+        refreshCanvasBounds()
         for c in copies { setNeedsDisplay(AnnotatorGeo.displayBounds(of: c)) }
         registerUndo(pre, name: "Duplicate")
     }
@@ -779,6 +897,9 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
     func restoreAnnotations(_ restored: [AnnotatorAnnotation]) {
         annotations = restored
         patchCache.removeAll()
+        canvasRect = AnnotatorGeo.canvasBounds(imageSize: pointSize, annotations: annotations)
+        setFrameSize(canvasRect.size)
+        onCanvasResized?()
         needsDisplay = true
         onStateChange?()
     }
@@ -1011,7 +1132,9 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         baseImage = cropped
         redactRenderer.setBase(cropped)
         patchCache.removeAll()
-        setFrameSize(pointSize)
+        canvasRect = AnnotatorGeo.canvasBounds(imageSize: pointSize, annotations: annotations)
+        setFrameSize(canvasRect.size)
+        onCanvasResized?()
         registerUndo(pre, name: "Crop")
         needsDisplay = true
         onImageChanged?()
@@ -1056,7 +1179,7 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         let editorStyle = id.flatMap { id in
             index(of: id).map { annotations[$0].textStyle }
         } ?? currentTextStyle
-        let tv = NSTextView(frame: frame)
+        let tv = NSTextView(frame: frame.offsetBy(dx: imageOriginInView.x, dy: imageOriginInView.y))
         tv.drawsBackground = false
         tv.textContainerInset = .zero
         tv.textContainer?.lineFragmentPadding = 0   // match NSStringDrawing output (research B2)
@@ -1117,7 +1240,7 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         defer { endingTextEdit = false }
 
         let string = tv.string
-        let frame = tv.frame
+        let frame = tv.frame.offsetBy(dx: -imageOriginInView.x, dy: -imageOriginInView.y)
         tv.delegate = nil
         tv.removeFromSuperview()
         textEditor = nil
@@ -1199,14 +1322,17 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         baseImage = state.base
         annotations = state.annotations
         selectedID = nil
+        selectedIDs = []
         patchCache.removeAll()
         if baseChanged {
             redactRenderer.setBase(state.base)
-            setFrameSize(pointSize)
             // A live crop rect sized for the old base would dangle off-canvas.
             if cropActive { cropRect = CGRect(origin: .zero, size: pointSize) }
             onImageChanged?()
         }
+        canvasRect = AnnotatorGeo.canvasBounds(imageSize: pointSize, annotations: annotations)
+        setFrameSize(canvasRect.size)
+        onCanvasResized?()
         needsDisplay = true
         onStateChange?()
     }

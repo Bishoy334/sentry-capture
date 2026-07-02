@@ -48,6 +48,7 @@ struct AnnotatorProject {
         var number: Int
         var redactStyle: Int
         var arrowStyle: Int
+        var imageFile: String?
     }
 
     // MARK: Write
@@ -56,10 +57,28 @@ struct AnnotatorProject {
         guard let png = OutputRouter.encodePNG(image: baseImage, dpiScale: scale) else {
             return false
         }
+        // Dropped-in images persist as numbered sidecars beside the project.
+        var items: [Item] = []
+        var imageIndex = 0
+        for a in annotations {
+            var item = Self.item(from: a)
+            if a.kind == .image, let ref = a.imageRef,
+               let data = OutputRouter.encodePNG(image: ref.image, dpiScale: scale) {
+                let name = "image-\(imageIndex).png"
+                imageIndex += 1
+                do {
+                    try data.write(to: dir.appendingPathComponent(name))
+                    item.imageFile = name
+                } catch {
+                    NSLog("sentryshot image write failed: \(error)")
+                }
+            }
+            items.append(item)
+        }
         let file = File(
             scale: scale,
             base: Self.baseFileName,
-            annotations: annotations.map(Self.item(from:)),
+            annotations: items,
             background: background.flatMap(Self.backgroundItem(from:)))
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -85,7 +104,7 @@ struct AnnotatorProject {
         return AnnotatorProject(
             scale: file.scale,
             baseImage: base,
-            annotations: file.annotations.map(annotation(from:)),
+            annotations: file.annotations.map { annotation(from: $0, in: dir) },
             background: file.background.flatMap(backgroundStyle(from:)))
     }
 
@@ -145,7 +164,7 @@ struct AnnotatorProject {
             arrowStyle: a.arrowStyle.rawValue)
     }
 
-    private static func annotation(from item: Item) -> AnnotatorAnnotation {
+    private static func annotation(from item: Item, in dir: URL) -> AnnotatorAnnotation {
         var a = AnnotatorAnnotation(kind: item.kind)
         if item.rect.count == 4 {
             a.rect = CGRect(x: item.rect[0], y: item.rect[1], width: item.rect[2], height: item.rect[3])
@@ -167,6 +186,13 @@ struct AnnotatorProject {
         if let string = item.string {
             a.text = AnnotatorRender.attributed(
                 string, size: a.textSize, colour: a.colour, style: a.textStyle)
+        }
+        if let imageFile = item.imageFile {
+            let url = dir.appendingPathComponent(imageFile)
+            if let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+               let cg = CGImageSourceCreateImageAtIndex(source, 0, nil) {
+                a.imageRef = AnnotatorImageRef(image: cg)
+            }
         }
         return a
     }
