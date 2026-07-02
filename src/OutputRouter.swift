@@ -290,6 +290,13 @@ final class OutputRouter {
             do {
                 let text = try await OCR.recognizeText(in: still.image)
                 if text.isEmpty {
+                    if let payload = try? await OCR.decodeBarcode(in: still.image), !payload.isEmpty {
+                        let pb = NSPasteboard.general
+                        pb.clearContents()
+                        pb.setString(payload, forType: .string)
+                        Toast.show("QR code copied", symbol: "qrcode.viewfinder")
+                        return
+                    }
                     Toast.show("No text found", symbol: "text.viewfinder")
                 } else {
                     let pb = NSPasteboard.general

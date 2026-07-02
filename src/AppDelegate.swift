@@ -363,6 +363,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if QuickAccessOverlay.shared.canRestore {
             menu.addItem(item("Restore Last Capture Card", #selector(restoreCard), key: ""))
         }
+        if PinController.shared.hasPins {
+            let title = PinController.shared.allHidden
+                ? "Show Pinned Screenshots" : "Hide Pinned Screenshots"
+            menu.addItem(item(title, #selector(togglePins), key: ""))
+        }
         menu.addItem(item("Open Captures Folder", #selector(openCapturesFolder), key: ""))
         menu.addItem(.separator())
         menu.addItem(item("Settings…", #selector(showPreferences), key: ","))
@@ -411,6 +416,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func restoreCard() {
         QuickAccessOverlay.shared.restoreLastClosed()
+    }
+
+    @objc private func togglePins() {
+        PinController.shared.toggleAllHidden()
     }
 
     @objc private func openCapturesFolder() {

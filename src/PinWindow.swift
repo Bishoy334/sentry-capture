@@ -8,10 +8,22 @@ final class PinController {
     static let shared = PinController()
 
     private var pins: [PinPanel] = []
+    private(set) var allHidden = false
+
+    var hasPins: Bool { !pins.isEmpty }
+
+    /// One keystroke to sweep every pin out of the way and back.
+    func toggleAllHidden() {
+        allHidden.toggle()
+        for pin in pins {
+            if allHidden { pin.orderOut(nil) } else { pin.orderFrontRegardless() }
+        }
+    }
 
     private init() {}
 
     func pin(_ still: StillCapture) {
+        allHidden = false
         let panel = PinPanel(still: still)
         pins.append(panel)
         panel.alphaValue = 0
