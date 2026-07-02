@@ -84,6 +84,24 @@ extension SentryStore {
         try? FileManager.default.trashItem(at: record.directory, resultingItemURL: nil)
         OutputRouter.shared.removeRecent(record.mediaURL)
     }
+
+    /// Retention policy: records older than the configured window move to the
+    /// Bin (recoverable, never deleted outright). Runs at launch and on a
+    /// slow timer — the app lives in the menu bar for weeks.
+    func sweepExpiredRecords() {
+        let days = Settings.shared.retentionDays
+        guard days > 0 else { return }
+        let cutoff = Date().addingTimeInterval(-Double(days) * 86_400)
+        var swept = 0
+        for record in listRecords() {
+            guard let created = record.created, created < cutoff else { continue }
+            trashRecord(record)
+            swept += 1
+        }
+        if swept > 0 {
+            NSLog("retention sweep: moved \(swept) capture(s) older than \(days)d to the Bin")
+        }
+    }
 }
 
 /// Grid thumbnails decode downsampled — never the full capture.

@@ -114,6 +114,18 @@ private struct PrefsGeneralPane: View {
                 }
                 Toggle("Play capture sound", isOn: $settings.playSound)
             }
+            Section {
+                Picker("Keep captures", selection: $settings.retentionDays) {
+                    Text("Forever").tag(0)
+                    Text("7 days").tag(7)
+                    Text("30 days").tag(30)
+                    Text("90 days").tag(90)
+                }
+            } header: {
+                Text("History")
+            } footer: {
+                Text("Older captures move to the Bin — they are never deleted outright.")
+            }
             Section("System") {
                 Toggle("Launch at login", isOn: launchAtLogin)
                 if loginStatus == .requiresApproval {

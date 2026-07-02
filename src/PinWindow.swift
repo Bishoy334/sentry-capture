@@ -11,6 +11,12 @@ final class PinController {
     private(set) var allHidden = false
 
     var hasPins: Bool { !pins.isEmpty }
+    /// Locked pins are click-through — only the menu bar can unlock them.
+    var hasLockedPins: Bool { pins.contains { $0.isLockedThrough } }
+
+    func unlockAll() {
+        for pin in pins { pin.isLockedThrough = false }
+    }
 
     /// One keystroke to sweep every pin out of the way and back.
     func toggleAllHidden() {
@@ -58,8 +64,14 @@ private func pinScreenUnderMouse() -> NSScreen? {
 @MainActor
 private final class PinPanel: NSPanel {
     // Borderless panels refuse key by default; key is needed for Cmd-W.
-    override var canBecomeKey: Bool { true }
+    override var canBecomeKey: Bool { !isLockedThrough }
     override var canBecomeMain: Bool { false }
+
+    /// Click-through: the pin stays visible but clicks pass to whatever is
+    /// under it — for keeping a reference on screen while working "through" it.
+    var isLockedThrough = false {
+        didSet { ignoresMouseEvents = isLockedThrough }
+    }
 
     init(still: StillCapture) {
         let frame = PinPanel.initialFrame(for: still)
@@ -217,6 +229,8 @@ private final class PinContentView: NSView {
         add("Save", #selector(saveAction))
         add("Annotate", #selector(annotateAction))
         menu.addItem(.separator())
+        add("Lock (Click-Through)", #selector(lockAction))
+        menu.addItem(.separator())
         add("Close", #selector(closeAction))
         add("Close All Pins", #selector(closeAllAction))
         NSMenu.popUpContextMenu(menu, with: event, for: self)
@@ -238,6 +252,12 @@ private final class PinContentView: NSView {
     @objc private func annotateAction() {
         OutputRouter.shared.openAnnotator(still)
         (window as? PinPanel)?.fadeOutAndClose()
+    }
+
+    @objc private func lockAction() {
+        setHover(false)   // clear the hover chrome the lock strands in place
+        (window as? PinPanel)?.isLockedThrough = true
+        Toast.show("Pin locked — unlock from the menu bar", symbol: "lock")
     }
 
     @objc private func closeAction() {

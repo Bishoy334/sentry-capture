@@ -36,6 +36,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if !CaptureEngine.shared.hasPermission {
             CaptureEngine.shared.requestPermission()
         }
+
+        SentryStore.shared.sweepExpiredRecords()
+        Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { _ in
+            MainActor.assumeIsolated { SentryStore.shared.sweepExpiredRecords() }
+        }
     }
 
     private func registerHotkeys() {
@@ -368,6 +373,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 ? "Show Pinned Screenshots" : "Hide Pinned Screenshots"
             menu.addItem(item(title, #selector(togglePins), key: ""))
         }
+        if PinController.shared.hasLockedPins {
+            menu.addItem(item("Unlock All Pins", #selector(unlockPins), key: ""))
+        }
         menu.addItem(item("Open Captures Folder", #selector(openCapturesFolder), key: ""))
         menu.addItem(.separator())
         menu.addItem(item("Settings…", #selector(showPreferences), key: ","))
@@ -420,6 +428,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func togglePins() {
         PinController.shared.toggleAllHidden()
+    }
+
+    @objc private func unlockPins() {
+        PinController.shared.unlockAll()
     }
 
     @objc private func openCapturesFolder() {

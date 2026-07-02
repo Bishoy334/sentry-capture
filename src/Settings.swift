@@ -34,6 +34,8 @@ final class Settings: ObservableObject {
     @Published var recordingCountdown: Int
     @Published var freezeSelectionScreen: Bool
     @Published var selfTimerSeconds: Int
+    /// Days to keep captures; 0 = forever. Expired records move to the Bin.
+    @Published var retentionDays: Int
     @Published var hotkeys: [HotkeyAction: Hotkey?]
 
     var saveDirectory: URL {
@@ -83,6 +85,7 @@ final class Settings: ObservableObject {
         recordingCountdown = d.object(forKey: "recordingCountdown") as? Int ?? 3
         freezeSelectionScreen = d.object(forKey: "freezeSelectionScreen") as? Bool ?? true
         selfTimerSeconds = d.object(forKey: "selfTimerSeconds") as? Int ?? 5
+        retentionDays = d.object(forKey: "retentionDays") as? Int ?? 0
 
         var loaded: [HotkeyAction: Hotkey?] = [:]
         let stored = (try? JSONDecoder().decode(
@@ -129,6 +132,7 @@ final class Settings: ObservableObject {
         d.set(recordingCountdown, forKey: "recordingCountdown")
         d.set(freezeSelectionScreen, forKey: "freezeSelectionScreen")
         d.set(selfTimerSeconds, forKey: "selfTimerSeconds")
+        d.set(retentionDays, forKey: "retentionDays")
         let encodable = Dictionary(uniqueKeysWithValues: hotkeys.map { ($0.key.rawValue, $0.value) })
         if let data = try? JSONEncoder().encode(encodable) {
             d.set(data, forKey: "hotkeys")
