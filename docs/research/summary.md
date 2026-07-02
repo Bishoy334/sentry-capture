@@ -1,0 +1,1 @@
+Parallel API + UX research for the Sentry Capture macOS app
