@@ -139,6 +139,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         switch action {
+        case .allInOne:
+            SelectionController.shared.begin(mode: .allInOne) { selection in
+                guard let selection, let chosen = selection.chosenAction else { return }
+                switch chosen {
+                case .recordVideo:
+                    RecordingController.shared.start(selection: selection, asGIF: false)
+                case .recordGIF:
+                    RecordingController.shared.start(selection: selection, asGIF: true)
+                case .scrollingCapture:
+                    ScrollingCaptureController.shared.begin(selection: selection)
+                case .copyText:
+                    Task { @MainActor in
+                        if let still = await self.capture(selection) {
+                            OutputRouter.shared.copyText(from: still)
+                        }
+                    }
+                case .pinArea:
+                    Task { @MainActor in
+                        if let still = await self.capture(selection) {
+                            PinController.shared.pin(still)
+                        }
+                    }
+                default:
+                    Task { @MainActor in
+                        if let still = await self.capture(selection) {
+                            OutputRouter.shared.deliver(still)
+                        }
+                    }
+                }
+            }
         case .captureArea:
             beginStillSelection(.still)
         case .captureWindow:
@@ -276,7 +306,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(.separator())
         }
 
-        for action in [HotkeyAction.captureArea, .captureWindow, .captureFullscreen, .timedCapture, .scrollingCapture] {
+        for action in [HotkeyAction.allInOne, .captureArea, .captureWindow, .captureFullscreen, .timedCapture, .scrollingCapture] {
             menu.addItem(actionItem(action))
         }
         menu.addItem(.separator())

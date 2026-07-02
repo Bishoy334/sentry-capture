@@ -103,6 +103,7 @@ extension NSScreen {
 }
 
 enum HotkeyAction: String, CaseIterable, Codable {
+    case allInOne
     case captureArea
     case captureWindow
     case captureFullscreen
@@ -115,6 +116,7 @@ enum HotkeyAction: String, CaseIterable, Codable {
 
     var title: String {
         switch self {
+        case .allInOne: return "All-in-One Capture"
         case .captureArea: return "Capture Area"
         case .captureWindow: return "Capture Window"
         case .captureFullscreen: return "Capture Fullscreen"
@@ -132,6 +134,7 @@ enum HotkeyAction: String, CaseIterable, Codable {
         // avoids the macOS 15+ bug where Option-only / Option-Shift-only
         // hotkeys never fire (FB15168205).
         switch self {
+        case .allInOne: return Hotkey(keyCode: UInt32(kVK_ANSI_1), carbonModifiers: optionCmd)
         case .copyText: return Hotkey(keyCode: UInt32(kVK_ANSI_2), carbonModifiers: optionCmd)
         case .captureFullscreen: return Hotkey(keyCode: UInt32(kVK_ANSI_3), carbonModifiers: optionCmd)
         case .captureArea: return Hotkey(keyCode: UInt32(kVK_ANSI_4), carbonModifiers: optionCmd)

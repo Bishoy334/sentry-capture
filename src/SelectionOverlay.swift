@@ -10,16 +10,18 @@ import ScreenCaptureKit
 final class SelectionController {
     static let shared = SelectionController()
 
-    enum Mode { case still, window, record, scrolling, ocr, pin }
+    enum Mode { case still, window, record, scrolling, ocr, pin, allInOne }
 
     struct Selection {
-        let rect: CGRect        // global CG top-left-origin points
+        var rect: CGRect        // global CG top-left-origin points
         let window: SCWindow?   // non-nil when the user picked a window
         let display: SCDisplay  // the display containing the selection
         /// Full-display capture taken when the overlay froze the screen —
         /// area captures crop this instead of re-shooting, so what the user
         /// selected (hover states, open menus) is exactly what they get.
         var frozen: StillCapture? = nil
+        /// All-in-One only: which action the user picked from the strip.
+        var chosenAction: HotkeyAction? = nil
     }
 
     private(set) var isActive = false
@@ -45,11 +47,18 @@ final class SelectionController {
     /// panels show, so they never need self-exclusion.
     private var frozen: [CGDirectDisplayID: StillCapture] = [:]
     fileprivate var frozenImages: [CGDirectDisplayID: NSImage] = [:]
+    fileprivate var heldRect: CGRect? { heldSelection?.rect }
     fileprivate var mouseCG: CGPoint = .zero
     fileprivate var hoverWindow: SCWindow?
     fileprivate var isDragging = false
 
     private var dragPending = false
+    /// All-in-One: a completed selection held on screen while the user picks
+    /// an action from the strip.
+    private var heldSelection: Selection?
+    private var movingHeld = false
+    private var moveLast: CGPoint = .zero
+    private var strip: AllInOneStrip?
     private var dragAnchor: CGPoint = .zero
     private var dragCurrent: CGPoint = .zero
     private var dragClampFrame: CGRect = .zero
@@ -64,7 +73,7 @@ final class SelectionController {
 
     private var windowPickAllowed: Bool {
         switch mode {
-        case .still, .window, .record: return true
+        case .still, .window, .record, .allInOne: return true
         case .scrolling, .ocr, .pin: return false
         }
     }
@@ -73,7 +82,7 @@ final class SelectionController {
     /// scrolling) must keep showing the real screen.
     private var freezeAllowed: Bool {
         switch mode {
-        case .still, .window, .ocr, .pin: return Settings.shared.freezeSelectionScreen
+        case .still, .window, .ocr, .pin, .allInOne: return Settings.shared.freezeSelectionScreen
         case .record, .scrolling: return false
         }
     }
@@ -84,6 +93,7 @@ final class SelectionController {
         case .window: return "Click a window — drag to select — Esc cancels"
         case .ocr: return "Drag over text — Esc cancels"
         case .scrolling, .pin: return "Drag to select — Esc cancels"
+        case .allInOne: return "Select, then pick an action below — Esc cancels"
         }
     }
 
@@ -171,6 +181,62 @@ final class SelectionController {
                 MainActor.assumeIsolated { SelectionController.shared.refetchContent() }
             }
         }
+
+        if mode == .allInOne {
+            let mouseScreen = screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }
+                ?? screens[0]
+            let strip = AllInOneStrip(screen: mouseScreen) { [weak self] action in
+                self?.stripPicked(action)
+            }
+            strip.setSelectionAvailable(false)
+            strip.orderFrontRegardless()
+            self.strip = strip
+        }
+    }
+
+    // MARK: All-in-One
+
+    private func stripPicked(_ action: HotkeyAction?) {
+        guard isActive else { return }
+        guard let action else {
+            finish(with: nil)   // strip cancel button
+            return
+        }
+        if action == .captureFullscreen {
+            // Whole display of the held selection (or the mouse), routed as a
+            // plain area so the frozen-crop path applies.
+            let display = heldSelection?.display
+                ?? content?.displays.first { $0.frame.contains(mouseCG) }
+                ?? content?.displays.first
+            guard let display else { return }
+            var selection = Selection(
+                rect: display.frame, window: nil, display: display,
+                frozen: frozen[display.displayID])
+            selection.chosenAction = .captureArea
+            finish(with: selection)
+            return
+        }
+        guard var selection = heldSelection else { return }
+        selection.chosenAction = action
+        finish(with: selection)
+    }
+
+    private func hold(_ selection: Selection) {
+        let old = heldSelection?.rect
+        heldSelection = selection
+        invalidate(cg: old)
+        invalidateSelection(from: selection.rect, to: selection.rect)
+        strip?.setSelectionAvailable(true)
+        for v in views { v.invalidateHintArea() }
+    }
+
+    private func clearHeld() {
+        guard let held = heldSelection else { return }
+        heldSelection = nil
+        movingHeld = false
+        strip?.setSelectionAvailable(false)
+        invalidateSelection(from: held.rect, to: held.rect)
+        resetToIdle(at: mouseCG)
     }
 
     private func finish(with selection: Selection?) {
@@ -190,6 +256,10 @@ final class SelectionController {
         }
         panels.removeAll()
         views.removeAll()
+        strip?.orderOut(nil)
+        strip = nil
+        heldSelection = nil
+        movingHeld = false
 
         if cursorPushed {
             NSCursor.pop()
@@ -243,7 +313,7 @@ final class SelectionController {
     }
 
     private func updateHover(force: Bool = false) {
-        let newHover = isDragging ? nil : windowUnder(mouseCG)
+        let newHover = (isDragging || heldSelection != nil) ? nil : windowUnder(mouseCG)
         guard force || newHover?.windowID != hoverWindow?.windowID else { return }
         let old = hoverWindow?.frame
         hoverWindow = newHover
@@ -293,6 +363,12 @@ final class SelectionController {
 
     fileprivate func handleMouseDown(at p: CGPoint, on view: SelectionOverlayView) {
         guard isActive, !isDragging else { return }
+        if let held = heldSelection, held.rect.contains(p) {
+            // Dragging inside the held selection slides it; outside starts over.
+            movingHeld = true
+            moveLast = p
+            return
+        }
         mouseCG = p
         lastMouseCG = p
         updateHover()   // a click with no prior movement still picks the right window
@@ -305,7 +381,21 @@ final class SelectionController {
     }
 
     fileprivate func handleMouseDragged(to p: CGPoint, shift: Bool) {
-        guard isActive, dragPending || isDragging else { return }
+        guard isActive else { return }
+        if movingHeld, var held = heldSelection {
+            let f = held.display.frame
+            var dx = p.x - moveLast.x
+            var dy = p.y - moveLast.y
+            dx = min(max(dx, f.minX - held.rect.minX), f.maxX - held.rect.maxX)
+            dy = min(max(dy, f.minY - held.rect.minY), f.maxY - held.rect.maxY)
+            let old = held.rect
+            held.rect = held.rect.offsetBy(dx: dx, dy: dy)
+            heldSelection = held
+            moveLast = p
+            invalidateSelection(from: old, to: held.rect)
+            return
+        }
+        guard dragPending || isDragging else { return }
         shiftHeld = shift
         if !isDragging {
             // Below the click-vs-drag threshold this is still a window pick.
@@ -339,22 +429,38 @@ final class SelectionController {
     fileprivate func handleMouseUp(at p: CGPoint) {
         guard isActive else { return }
         defer { dragPending = false }
+        if movingHeld {
+            movingHeld = false
+            return
+        }
         if isDragging {
             let rect = currentDragRect()
             if rect.width >= 4, rect.height >= 4,
                let display = dragDisplay
                    ?? content.flatMap({ CaptureEngine.shared.display(containing: rect, in: $0) }) {
-                finish(with: Selection(
+                let selection = Selection(
                     rect: rect, window: nil, display: display,
-                    frozen: frozen[display.displayID]))
+                    frozen: frozen[display.displayID])
+                if mode == .allInOne {
+                    isDragging = false
+                    hold(selection)
+                } else {
+                    finish(with: selection)
+                }
             } else {
                 resetToIdle(at: p)
             }
-        } else if windowPickAllowed,
+        } else if heldSelection == nil,
+                  windowPickAllowed,
                   let picked = hoverWindow ?? windowUnder(p),
                   let content,
                   let display = CaptureEngine.shared.display(containing: picked.frame, in: content) {
-            finish(with: Selection(rect: picked.frame, window: picked, display: display))
+            let selection = Selection(rect: picked.frame, window: picked, display: display)
+            if mode == .allInOne {
+                hold(selection)
+            } else {
+                finish(with: selection)
+            }
         } else {
             resetToIdle(at: p)
         }
@@ -385,9 +491,17 @@ final class SelectionController {
     fileprivate func handleKeyDown(_ event: NSEvent) {
         switch Int(event.keyCode) {
         case kVK_Escape:
-            finish(with: nil)
+            if heldSelection != nil {
+                clearHeld()
+            } else {
+                finish(with: nil)
+            }
         case kVK_Return, kVK_ANSI_KeypadEnter:
-            repeatLastArea()
+            if mode == .allInOne, heldSelection != nil {
+                stripPicked(.captureArea)   // Return = the default action
+            } else {
+                repeatLastArea()
+            }
         case kVK_Space:
             if !event.isARepeat { spaceHeld = true }
         default:
@@ -416,8 +530,13 @@ final class SelectionController {
               content.displays.contains(where: { $0.frame.intersects(rect) }),
               let display = CaptureEngine.shared.display(containing: rect, in: content)
         else { return }
-        finish(with: Selection(
-            rect: rect, window: nil, display: display, frozen: frozen[display.displayID]))
+        let selection = Selection(
+            rect: rect, window: nil, display: display, frozen: frozen[display.displayID])
+        if mode == .allInOne {
+            hold(selection)
+        } else {
+            finish(with: selection)
+        }
     }
 
     // MARK: Invalidation (global CG rects -> per-screen dirty rects)
@@ -599,8 +718,14 @@ private final class SelectionOverlayView: NSView {
                 fraction: 1, respectFlipped: true, hints: [.interpolation: NSNumber(value: 1)])
         }
         let selection: NSRect? = {
-            guard controller.isDragging else { return nil }
-            let cg = controller.currentDragRect()
+            let cg: CGRect
+            if controller.isDragging {
+                cg = controller.currentDragRect()
+            } else if let held = controller.heldRect {
+                cg = held
+            } else {
+                return nil
+            }
             guard cg.width > 0, cg.height > 0, cg.intersects(screenFrameCG) else { return nil }
             return viewRect(fromCG: cg)
         }()
@@ -621,7 +746,7 @@ private final class SelectionOverlayView: NSView {
             border.stroke()
             drawSizeLabel(for: selection)
         }
-        guard !controller.isDragging else { return }
+        guard !controller.isDragging, controller.heldRect == nil else { return }
 
         if let hover = controller.hoverWindow {
             let rect = viewRect(fromCG: hover.frame)
@@ -753,4 +878,129 @@ private final class SelectionOverlayView: NSView {
             at: NSPoint(x: rect.midX - textSize.width / 2, y: rect.midY - textSize.height / 2),
             withAttributes: attrs)
     }
+}
+
+
+// MARK: - All-in-One action strip
+
+/// Floating action bar for All-in-One mode: pick what happens to the held
+/// selection. Non-activating so the frontmost app keeps focus; sits above the
+/// overlay panels at the same level by ordering after them.
+@MainActor
+private final class AllInOneStrip: NSPanel {
+    private let onPick: (HotkeyAction?) -> Void
+    private var selectionButtons: [NSButton] = []
+
+    init(screen: NSScreen, onPick: @escaping (HotkeyAction?) -> Void) {
+        self.onPick = onPick
+        super.init(
+            contentRect: .zero,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false)
+        isReleasedWhenClosed = false
+        level = .screenSaver
+        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        backgroundColor = .clear
+        isOpaque = false
+        hasShadow = true
+        hidesOnDeactivate = false
+        animationBehavior = .none
+        becomesKeyOnlyIfNeeded = true
+
+        let entries: [(symbol: String, label: String, action: HotkeyAction?, needsSelection: Bool)] = [
+            ("camera.viewfinder", "Capture", .captureArea, true),
+            ("display", "Fullscreen", .captureFullscreen, false),
+            ("record.circle", "Record", .recordVideo, true),
+            ("photo.stack", "GIF", .recordGIF, true),
+            ("arrow.up.and.down.square", "Scrolling", .scrollingCapture, true),
+            ("text.viewfinder", "OCR", .copyText, true),
+            ("pin", "Pin", .pinArea, true),
+        ]
+
+        let stack = NSStackView()
+        stack.orientation = .horizontal
+        stack.spacing = 2
+        stack.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)
+        for (i, entry) in entries.enumerated() {
+            let button = stripButton(symbol: entry.symbol, label: entry.label, tag: i)
+            stack.addArrangedSubview(button)
+            if entry.needsSelection { selectionButtons.append(button) }
+        }
+        let divider = NSView()
+        divider.wantsLayer = true
+        divider.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.15).cgColor
+        divider.translatesAutoresizingMaskIntoConstraints = false
+        divider.widthAnchor.constraint(equalToConstant: 1).isActive = true
+        divider.heightAnchor.constraint(equalToConstant: 26).isActive = true
+        stack.addArrangedSubview(divider)
+        stack.setCustomSpacing(8, after: stack.arrangedSubviews[stack.arrangedSubviews.count - 2])
+        stack.setCustomSpacing(8, after: divider)
+        let cancel = stripButton(symbol: "xmark", label: "Cancel", tag: entries.count)
+        stack.addArrangedSubview(cancel)
+        self.entriesActions = entries.map(\.action)
+
+        let card = NSVisualEffectView()
+        card.material = .hudWindow
+        card.state = .active
+        card.wantsLayer = true
+        card.layer?.cornerRadius = 12
+        card.layer?.masksToBounds = true
+        card.layer?.borderWidth = 1
+        card.layer?.borderColor = NSColor.white.withAlphaComponent(0.12).cgColor
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: card.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: card.bottomAnchor),
+        ])
+        contentView = card
+
+        let size = stack.fittingSize
+        let origin = NSPoint(
+            x: screen.visibleFrame.midX - size.width / 2,
+            y: screen.visibleFrame.minY + 28)
+        setFrame(NSRect(origin: origin, size: size), display: false)
+    }
+
+    private var entriesActions: [HotkeyAction?] = []
+
+    private func stripButton(symbol: String, label: String, tag: Int) -> NSButton {
+        let button = NSButton()
+        button.isBordered = false
+        button.setButtonType(.momentaryChange)
+        button.imagePosition = .imageAbove
+        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)?
+            .withSymbolConfiguration(.init(pointSize: 15, weight: .medium))
+        button.title = label
+        button.font = .systemFont(ofSize: 9.5, weight: .medium)
+        button.contentTintColor = .white
+        button.toolTip = label
+        button.tag = tag
+        button.target = self
+        button.action = #selector(buttonTapped(_:))
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.widthAnchor.constraint(equalToConstant: 62).isActive = true
+        button.heightAnchor.constraint(equalToConstant: 44).isActive = true
+        return button
+    }
+
+    func setSelectionAvailable(_ available: Bool) {
+        for button in selectionButtons {
+            button.isEnabled = available
+            button.alphaValue = available ? 1 : 0.35
+        }
+    }
+
+    @objc private func buttonTapped(_ sender: NSButton) {
+        if sender.tag < entriesActions.count {
+            onPick(entriesActions[sender.tag])
+        } else {
+            onPick(nil)   // cancel
+        }
+    }
+
+    override var canBecomeKey: Bool { false }
 }
