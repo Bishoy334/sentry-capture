@@ -115,7 +115,7 @@ enum AnnotatorTextStyle: Int, Equatable, Codable, CaseIterable {
     }
 }
 
-enum AnnotatorKind: Equatable {
+enum AnnotatorKind: String, Equatable, Codable {
     case arrow, line, rect, filledRect, ellipse, freehand, highlighter, text, counter, redact, spotlight
 }
 

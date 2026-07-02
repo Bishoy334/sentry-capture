@@ -30,6 +30,7 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         case cropNew(anchor: CGPoint)
         case cropMove(last: CGPoint)
         case cropResize(handle: AnnotatorHandle, original: CGRect)
+        case marquee(anchor: CGPoint)
     }
 
     // MARK: State
@@ -38,6 +39,9 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
     let imageScale: CGFloat
     private(set) var annotations: [AnnotatorAnnotation] = []
     private(set) var selectedID: UUID?
+    /// Full selection; selectedID is the primary (last-clicked) member and
+    /// the one that shows resize handles / drives the options bar.
+    private(set) var selectedIDs: Set<UUID> = []
 
     var tool: AnnotatorTool = .select {
         didSet { toolDidChange(from: oldValue) }
@@ -87,6 +91,7 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
 
     private var drag: Drag = .none
     private var preGesture: State?
+    private var marqueeRect: CGRect = .zero
 
     private var textEditor: NSTextView?
     private var editingTextID: UUID?
@@ -154,12 +159,36 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
                   AnnotatorGeo.displayBounds(of: a).intersects(dirtyRect) else { continue }
             AnnotatorRender.draw(a, in: ctx, canvasHeight: h, redactPatch: nil)
         }
-        if !cropActive, let id = selectedID, let sel = annotation(id) {
-            drawChrome(sel, in: ctx)
+        if !cropActive {
+            for id in selectedIDs where id != selectedID {
+                if let member = annotation(id) { drawSelectionOutline(member, in: ctx) }
+            }
+            if let id = selectedID, let sel = annotation(id) {
+                drawChrome(sel, in: ctx)
+            }
+        }
+        if case .marquee = drag, marqueeRect.width + marqueeRect.height > 2 {
+            ctx.saveGState()
+            ctx.setStrokeColor(NSColor.controlAccentColor.cgColor)
+            ctx.setLineWidth(1 / zoom)
+            ctx.setLineDash(phase: 0, lengths: [4 / zoom, 3 / zoom])
+            ctx.stroke(marqueeRect)
+            ctx.setFillColor(NSColor.controlAccentColor.withAlphaComponent(0.08).cgColor)
+            ctx.fill(marqueeRect)
+            ctx.restoreGState()
         }
         if cropActive {
             drawCropOverlay(in: ctx)
         }
+    }
+
+    private func drawSelectionOutline(_ a: AnnotatorAnnotation, in ctx: CGContext) {
+        ctx.saveGState()
+        ctx.setStrokeColor(NSColor.controlAccentColor.withAlphaComponent(0.7).cgColor)
+        ctx.setLineWidth(1 / zoom)
+        ctx.setLineDash(phase: 0, lengths: [3 / zoom, 2 / zoom])
+        ctx.stroke(AnnotatorGeo.bounds(of: a).insetBy(dx: -3, dy: -3))
+        ctx.restoreGState()
     }
 
     private func cachedPatch(for a: AnnotatorAnnotation) -> (rect: CGRect, image: CGImage)? {
@@ -385,6 +414,9 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
     }
 
     private func selectMouseDown(at p: CGPoint, clickCount: Int) {
+        let shift = NSEvent.modifierFlags.contains(.shift)
+        let option = NSEvent.modifierFlags.contains(.option)
+
         if let id = selectedID, let sel = annotation(id),
            let handle = AnnotatorHit.handleHit(AnnotatorHit.handles(for: sel), at: p, slop: 12 / zoom) {
             drag = .resize(id: id, handle: handle, original: sel.rect)
@@ -398,11 +430,37 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
                 drag = .none
                 return
             }
-            setSelected(hit.id)
-            drag = .move(id: hit.id, last: p)
+            if shift {
+                // Toggle membership; the clicked item becomes primary when added.
+                var ids = selectedIDs
+                if ids.contains(hit.id) {
+                    ids.remove(hit.id)
+                    setSelection(ids, primary: ids.first)
+                    drag = .none
+                } else {
+                    ids.insert(hit.id)
+                    setSelection(ids, primary: hit.id)
+                    drag = .move(id: hit.id, last: p)
+                }
+                return
+            }
+            if !selectedIDs.contains(hit.id) {
+                setSelected(hit.id)
+            } else if selectedID != hit.id {
+                setSelection(selectedIDs, primary: hit.id)
+            }
+            if option {
+                // Option-drag peels off duplicates and moves those instead.
+                duplicateSelected(offset: .zero)
+            }
+            drag = .move(id: selectedID ?? hit.id, last: p)
+        } else if shift {
+            drag = .marquee(anchor: p)
+            marqueeRect = CGRect(origin: p, size: .zero)
         } else {
             setSelected(nil)
-            drag = .none
+            drag = .marquee(anchor: p)
+            marqueeRect = CGRect(origin: p, size: .zero)
         }
     }
 
@@ -433,7 +491,9 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
             update(id) { $0.points.append(p) }
         case .move(let id, let last):
             let d = CGPoint(x: p.x - last.x, y: p.y - last.y)
-            update(id) { $0 = AnnotatorGeo.translate($0, by: d) }
+            for member in (selectedIDs.isEmpty ? [id] : Array(selectedIDs)) {
+                update(member) { $0 = AnnotatorGeo.translate($0, by: d) }
+            }
             drag = .move(id: id, last: p)
         case .resize(let id, let handle, let original):
             update(id) {
@@ -462,6 +522,10 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         case .cropResize(let handle, let original):
             cropRect = cropResized(original: original, handle: handle, to: clampedToCanvas(p))
             needsDisplay = true
+        case .marquee(let anchor):
+            let before = marqueeRect
+            marqueeRect = AnnotatorGeo.rect(from: anchor, to: p)
+            setNeedsDisplay(before.union(marqueeRect).insetBy(dx: -2, dy: -2))
         }
     }
 
@@ -502,6 +566,21 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
                 cropRect = CGRect(origin: .zero, size: pointSize)
                 needsDisplay = true
             }
+        case .marquee:
+            if marqueeRect.width > 3 || marqueeRect.height > 3 {
+                let hit = annotations.filter {
+                    AnnotatorGeo.bounds(of: $0).intersects(marqueeRect)
+                }.map(\.id)
+                let ids = Set(hit)
+                if NSEvent.modifierFlags.contains(.shift) {
+                    setSelection(selectedIDs.union(ids), primary: hit.last ?? selectedID)
+                } else {
+                    setSelection(ids, primary: hit.last)
+                }
+            }
+            let dirty = marqueeRect.insetBy(dx: -2, dy: -2)
+            marqueeRect = .zero
+            setNeedsDisplay(dirty)
         default:
             break
         }
@@ -530,6 +609,33 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         default: return "Edit"
         }
     }
+
+    // MARK: Context menu
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let p = convert(event.locationInWindow, from: nil)
+        guard let hit = annotations.reversed().first(where: { AnnotatorHit.hitTest($0, at: p) })
+        else { return nil }
+        if !selectedIDs.contains(hit.id) { setSelected(hit.id) }
+        let menu = NSMenu()
+        func add(_ title: String, _ selector: Selector, key: String = "") {
+            let item = NSMenuItem(title: title, action: selector, keyEquivalent: key)
+            item.target = self
+            menu.addItem(item)
+        }
+        add("Duplicate", #selector(menuDuplicate))
+        menu.addItem(.separator())
+        add("Bring to Front", #selector(menuBringToFront))
+        add("Send to Back", #selector(menuSendToBack))
+        menu.addItem(.separator())
+        add("Delete", #selector(menuDelete))
+        return menu
+    }
+
+    @objc private func menuDuplicate() { duplicateSelected() }
+    @objc private func menuBringToFront() { bringSelectionForward() }
+    @objc private func menuSendToBack() { sendSelectionBackward() }
+    @objc private func menuDelete() { deleteSelected() }
 
     // MARK: Keyboard
 
@@ -566,19 +672,57 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
     }
 
     private func nudge(dx: CGFloat, dy: CGFloat, big: Bool) {
-        guard let id = selectedID else { return }
+        guard !selectedIDs.isEmpty else { return }
         let step: CGFloat = big ? 10 : 1
         let pre = snapshot()
-        update(id) { $0 = AnnotatorGeo.translate($0, by: CGPoint(x: dx * step, y: dy * step)) }
+        for id in selectedIDs {
+            update(id) { $0 = AnnotatorGeo.translate($0, by: CGPoint(x: dx * step, y: dy * step)) }
+        }
         registerUndo(pre, name: "Nudge")
     }
 
     func deleteSelected() {
-        guard let id = selectedID else { return }
+        guard !selectedIDs.isEmpty else { return }
         let pre = snapshot()
-        removeAnnotation(id)
+        for id in selectedIDs { removeAnnotation(id) }
         setSelected(nil)
         registerUndo(pre, name: "Delete")
+    }
+
+    /// Copies land selected so a follow-up drag moves them; pass .zero when
+    /// the caller is about to drag (option-drag duplicate).
+    func duplicateSelected(offset: CGPoint = CGPoint(x: 14, y: 14)) {
+        guard !selectedIDs.isEmpty else { return }
+        let pre = snapshot()
+        var copies: [AnnotatorAnnotation] = []
+        for a in annotations where selectedIDs.contains(a.id) {
+            var copy = AnnotatorGeo.translate(a, by: offset)
+            copy.id = UUID()
+            copies.append(copy)
+        }
+        annotations.append(contentsOf: copies)
+        renumberCounters()
+        setSelection(Set(copies.map(\.id)), primary: copies.last?.id)
+        for c in copies { setNeedsDisplay(AnnotatorGeo.displayBounds(of: c)) }
+        registerUndo(pre, name: "Duplicate")
+    }
+
+    func bringSelectionForward() {
+        reorderSelection(toFront: true)
+    }
+
+    func sendSelectionBackward() {
+        reorderSelection(toFront: false)
+    }
+
+    private func reorderSelection(toFront: Bool) {
+        guard !selectedIDs.isEmpty else { return }
+        let pre = snapshot()
+        let moving = annotations.filter { selectedIDs.contains($0.id) }
+        let staying = annotations.filter { !selectedIDs.contains($0.id) }
+        annotations = toFront ? staying + moving : moving + staying
+        needsDisplay = true
+        registerUndo(pre, name: toFront ? "Bring to Front" : "Send to Back")
     }
 
     // MARK: Selection / mutation helpers
@@ -595,13 +739,18 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
     }
 
     private func setSelected(_ id: UUID?) {
-        guard id != selectedID else { return }
-        if let old = annotation(selectedID) {
-            setNeedsDisplay(AnnotatorGeo.displayBounds(of: old))
+        setSelection(id.map { [$0] } ?? [], primary: id)
+    }
+
+    private func setSelection(_ ids: Set<UUID>, primary: UUID?) {
+        guard ids != selectedIDs || primary != selectedID else { return }
+        for old in selectedIDs {
+            if let a = annotation(old) { setNeedsDisplay(AnnotatorGeo.displayBounds(of: a)) }
         }
-        selectedID = id
-        if let new = annotation(id) {
-            setNeedsDisplay(AnnotatorGeo.displayBounds(of: new))
+        selectedIDs = ids
+        selectedID = primary ?? ids.first
+        for new in selectedIDs {
+            if let a = annotation(new) { setNeedsDisplay(AnnotatorGeo.displayBounds(of: a)) }
         }
         onStateChange?()
     }
@@ -624,6 +773,14 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         patchCache.removeValue(forKey: id)
         renumberCounters()
         setNeedsDisplay(bounds)
+    }
+
+    /// Restores a saved project's annotation array (numbers included).
+    func restoreAnnotations(_ restored: [AnnotatorAnnotation]) {
+        annotations = restored
+        patchCache.removeAll()
+        needsDisplay = true
+        onStateChange?()
     }
 
     private func renumberCounters() {

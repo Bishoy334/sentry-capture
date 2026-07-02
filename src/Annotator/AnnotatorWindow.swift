@@ -10,13 +10,25 @@ final class AnnotatorController {
 
     private init() {}
 
-    /// One editor window per capture; multiple may be open at once.
+    /// One editor window per capture; multiple may be open at once. When the
+    /// capture's record carries a .sentryshot project, the clean base and the
+    /// live annotation objects are restored instead of the baked media.
     func open(_ still: StillCapture) {
         guard still.image.width > 0, still.image.height > 0 else {
             Toast.show("Nothing to annotate", symbol: "exclamationmark.triangle")
             return
         }
-        let editor = AnnotatorWindowController(still: still)
+        var editorStill = still
+        var restored: [AnnotatorAnnotation] = []
+        if let id = still.recordID,
+           SentryStore.shared.loadManifest(for: id)?.annotations?.project != nil,
+           let project = AnnotatorProject.load(from: SentryStore.shared.recordDirectory(for: id)) {
+            editorStill = StillCapture(
+                image: project.baseImage, scale: project.scale, source: still.source,
+                screenRect: nil, origin: still.origin, recordID: id)
+            restored = project.annotations
+        }
+        let editor = AnnotatorWindowController(still: editorStill, restoredAnnotations: restored)
         editor.onClose = { [weak self, weak editor] in
             self?.editors.removeAll { $0 === editor }
         }
@@ -82,11 +94,14 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         ("Free", nil), ("1:1", 1), ("16:9", 16.0 / 9.0), ("4:3", 4.0 / 3.0), ("3:2", 3.0 / 2.0),
     ]
 
-    init(still: StillCapture) {
+    init(still: StillCapture, restoredAnnotations: [AnnotatorAnnotation] = []) {
         source = still.source
         origin = still.origin
         recordID = still.recordID
         canvas = AnnotatorCanvas(still: still)
+        if !restoredAnnotations.isEmpty {
+            canvas.restoreAnnotations(restoredAnnotations)
+        }
         let editorWindow = AnnotatorEditorWindow(
             contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -589,9 +604,24 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
 
     @objc private func saveTapped() {
         guard let still = exportStill() else { return }
-        if OutputRouter.shared.reExport(still, annotationCount: canvas.annotations.count) != nil {
-            Toast.show("Saved", symbol: "square.and.arrow.down")
+        guard OutputRouter.shared.reExport(still, annotationCount: canvas.annotations.count) != nil
+        else { return }
+        // Editable state rides along with the record so the capture can be
+        // reopened and re-edited — the baked media alone is a dead end.
+        if let recordID {
+            let project = AnnotatorProject(
+                scale: canvas.imageScale,
+                baseImage: canvas.baseImage,
+                annotations: canvas.annotations)
+            if project.write(in: SentryStore.shared.recordDirectory(for: recordID)) {
+                SentryStore.shared.amendManifest(id: recordID) {
+                    $0.annotations = SentryManifest.Annotations(
+                        count: canvas.annotations.count,
+                        project: AnnotatorProject.projectFileName)
+                }
+            }
         }
+        Toast.show("Saved", symbol: "square.and.arrow.down")
     }
 
     @objc private func saveAsTapped() {
@@ -637,6 +667,12 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             windowUndoManager.undo()
         case ("z", true):
             windowUndoManager.redo()
+        case ("d", false):
+            canvas.duplicateSelected()
+        case ("]", false):
+            canvas.bringSelectionForward()
+        case ("[", false):
+            canvas.sendSelectionBackward()
         case ("=", _), ("+", _):
             zoom(by: 1.25)
         case ("-", _):
