@@ -269,6 +269,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         recentsItem.submenu = recentsMenu
         menu.addItem(recentsItem)
+        menu.addItem(item("Capture History…", #selector(showHistory), key: ""))
         menu.addItem(item("Open Captures Folder", #selector(openCapturesFolder), key: ""))
         menu.addItem(.separator())
         menu.addItem(item("Settings…", #selector(showPreferences), key: ","))
@@ -309,6 +310,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func openRecent(_ sender: NSMenuItem) {
         guard let url = sender.representedObject as? URL else { return }
         NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    @objc private func showHistory() {
+        HistoryController.shared.show()
     }
 
     @objc private func openCapturesFolder() {
