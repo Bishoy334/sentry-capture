@@ -57,9 +57,19 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     private let recordID: String?
     private let windowUndoManager = UndoManager()
 
-    private var railButtons: [(tool: AnnotatorTool, button: NSButton)] = []
+    private var toolButtons: [(tool: AnnotatorTool, button: NSButton)] = []
     private let optionsStack = NSStackView()
     private let dimensionsLabel = NSTextField(labelWithString: "")
+
+    /// Toolbar layout: capture-level, shapes, emphasis, ink, then select.
+    /// nil entries render as group separators.
+    private static let toolbarGroups: [[AnnotatorTool]] = [
+        [.crop],
+        [.arrow, .line, .rect, .filledRect, .ellipse],
+        [.highlighter, .redact, .counter],
+        [.draw, .text],
+        [.select],
+    ]
 
     private static let palette: [(colour: NSColor, name: String)] = [
         (.systemRed, "Red"), (.systemOrange, "Orange"), (.systemYellow, "Yellow"),
@@ -68,6 +78,9 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     ]
     private static let strokeWidths: [CGFloat] = [2, 4, 6]
     private static let textSizes: [(label: String, size: CGFloat)] = [("S", 14), ("M", 20), ("L", 28)]
+    private static let cropAspects: [(label: String, ratio: CGFloat?)] = [
+        ("Free", nil), ("1:1", 1), ("16:9", 16.0 / 9.0), ("4:3", 4.0 / 3.0), ("3:2", 3.0 / 2.0),
+    ]
 
     init(still: StillCapture) {
         source = still.source
@@ -120,9 +133,9 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     private func buildContent() -> NSView {
         let content = NSView()
 
-        let rail = buildRail()
+        let toolbar = buildToolbar()
         let optionsBar = buildOptionsBar()
-        let bottomBar = buildBottomBar()
+        let footer = buildFooter()
 
         scrollView.documentView = canvas
         scrollView.hasVerticalScroller = true
@@ -133,30 +146,30 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         scrollView.drawsBackground = true
         scrollView.backgroundColor = .underPageBackgroundColor
 
-        for v in [rail, optionsBar, scrollView, bottomBar] {
+        for v in [toolbar, optionsBar, scrollView, footer] {
             v.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(v)
         }
         NSLayoutConstraint.activate([
-            rail.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            rail.topAnchor.constraint(equalTo: content.topAnchor),
-            rail.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-            rail.widthAnchor.constraint(equalToConstant: 44),
+            toolbar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            toolbar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            toolbar.topAnchor.constraint(equalTo: content.topAnchor),
+            toolbar.heightAnchor.constraint(equalToConstant: 44),
 
-            optionsBar.leadingAnchor.constraint(equalTo: rail.trailingAnchor),
+            optionsBar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             optionsBar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            optionsBar.topAnchor.constraint(equalTo: content.topAnchor),
-            optionsBar.heightAnchor.constraint(equalToConstant: 36),
+            optionsBar.topAnchor.constraint(equalTo: toolbar.bottomAnchor),
+            optionsBar.heightAnchor.constraint(equalToConstant: 34),
 
-            scrollView.leadingAnchor.constraint(equalTo: rail.trailingAnchor),
+            scrollView.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             scrollView.topAnchor.constraint(equalTo: optionsBar.bottomAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: bottomBar.topAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: footer.topAnchor),
 
-            bottomBar.leadingAnchor.constraint(equalTo: rail.trailingAnchor),
-            bottomBar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            bottomBar.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-            bottomBar.heightAnchor.constraint(equalToConstant: 40),
+            footer.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            footer.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            footer.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            footer.heightAnchor.constraint(equalToConstant: 30),
         ])
         return content
     }
@@ -169,45 +182,84 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         return line
     }
 
-    private func buildRail() -> NSView {
+    private func buildToolbar() -> NSView {
         let container = NSView()
         let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.spacing = 4
+        stack.orientation = .horizontal
+        stack.spacing = 2
         stack.translatesAutoresizingMaskIntoConstraints = false
 
-        for (i, tool) in AnnotatorTool.allCases.enumerated() {
-            let button = NSButton()
-            button.isBordered = false
-            button.setButtonType(.momentaryChange)
-            button.imagePosition = .imageOnly
-            button.image = NSImage(systemSymbolName: tool.symbolName, accessibilityDescription: tool.label)?
-                .withSymbolConfiguration(.init(pointSize: 14, weight: .medium))
-            button.toolTip = "\(tool.label) (\(tool.key.uppercased()))"
-            button.wantsLayer = true
-            button.layer?.cornerRadius = 6
-            button.tag = i
-            button.target = self
-            button.action = #selector(railTapped(_:))
-            button.translatesAutoresizingMaskIntoConstraints = false
-            button.widthAnchor.constraint(equalToConstant: 32).isActive = true
-            button.heightAnchor.constraint(equalToConstant: 30).isActive = true
-            stack.addArrangedSubview(button)
-            railButtons.append((tool, button))
+        for (groupIndex, group) in Self.toolbarGroups.enumerated() {
+            if groupIndex > 0 {
+                let divider = hairline()
+                divider.heightAnchor.constraint(equalToConstant: 18).isActive = true
+                divider.widthAnchor.constraint(equalToConstant: 1).isActive = true
+                stack.addArrangedSubview(divider)
+                stack.setCustomSpacing(8, after: stack.arrangedSubviews[stack.arrangedSubviews.count - 2])
+                stack.setCustomSpacing(8, after: divider)
+            }
+            for tool in group {
+                let index = AnnotatorTool.allCases.firstIndex(of: tool) ?? 0
+                let button = toolbarIconButton(
+                    symbol: tool.symbolName,
+                    tooltip: "\(tool.label) (\(tool.key.uppercased()))",
+                    action: #selector(toolTapped(_:)))
+                button.tag = index
+                stack.addArrangedSubview(button)
+                toolButtons.append((tool, button))
+            }
         }
+
+        // Primary actions live top-right: pin, copy, save.
+        let pin = toolbarIconButton(
+            symbol: "pin", tooltip: "Pin to Screen", action: #selector(pinTapped))
+        let copy = toolbarIconButton(
+            symbol: "doc.on.doc", tooltip: "Copy (⌘C)", action: #selector(copyTapped))
+        let save = toolbarIconButton(
+            symbol: "square.and.arrow.down", tooltip: "Save (⌘S)", action: #selector(saveTapped))
+        save.contentTintColor = .controlAccentColor
+        let actions = NSStackView(views: [pin, copy, save])
+        actions.orientation = .horizontal
+        actions.spacing = 2
+        actions.translatesAutoresizingMaskIntoConstraints = false
 
         let separator = hairline()
         container.addSubview(stack)
+        container.addSubview(actions)
         container.addSubview(separator)
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 10),
-            stack.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 10),
+            stack.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            actions.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -10),
+            actions.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: actions.leadingAnchor, constant: -12),
+            separator.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             separator.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            separator.topAnchor.constraint(equalTo: container.topAnchor),
             separator.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            separator.widthAnchor.constraint(equalToConstant: 1),
+            separator.heightAnchor.constraint(equalToConstant: 1),
         ])
         return container
+    }
+
+    private func toolbarIconButton(
+        symbol: String, tooltip: String, action: Selector
+    ) -> NSButton {
+        let button = NSButton()
+        button.isBordered = false
+        button.setButtonType(.momentaryChange)
+        button.imagePosition = .imageOnly
+        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: tooltip)?
+            .withSymbolConfiguration(.init(pointSize: 14, weight: .medium))
+        button.toolTip = tooltip
+        button.contentTintColor = .secondaryLabelColor
+        button.wantsLayer = true
+        button.layer?.cornerRadius = 6
+        button.target = self
+        button.action = action
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.widthAnchor.constraint(equalToConstant: 32).isActive = true
+        button.heightAnchor.constraint(equalToConstant: 28).isActive = true
+        return button
     }
 
     private func buildOptionsBar() -> NSView {
@@ -231,21 +283,20 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         return container
     }
 
-    private func buildBottomBar() -> NSView {
+    private func buildFooter() -> NSView {
         let container = NSView()
 
-        dimensionsLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        dimensionsLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         dimensionsLabel.textColor = .secondaryLabelColor
 
-        let copy = NSButton(title: "Copy", target: self, action: #selector(copyTapped))
-        let save = NSButton(title: "Save", target: self, action: #selector(saveTapped))
         let saveAs = NSButton(title: "Save As…", target: self, action: #selector(saveAsTapped))
-        for b in [copy, save, saveAs] { b.controlSize = .regular }
+        saveAs.controlSize = .small
+        saveAs.bezelStyle = .accessoryBarAction
 
         let spacer = NSView()
         spacer.setContentHuggingPriority(.init(1), for: .horizontal)
 
-        let stack = NSStackView(views: [dimensionsLabel, spacer, copy, save, saveAs])
+        let stack = NSStackView(views: [dimensionsLabel, spacer, saveAs])
         stack.orientation = .horizontal
         stack.spacing = 8
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -267,12 +318,13 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
 
     private func sizeWindowToImage() {
         let pt = canvas.pointSize
-        var size = NSSize(width: pt.width + 44 + 2, height: pt.height + 36 + 40 + 2)
+        var size = NSSize(width: pt.width + 2, height: pt.height + 44 + 34 + 30 + 2)
         if let screen = NSScreen.main ?? NSScreen.screens.first {
             size.width = min(size.width, screen.visibleFrame.width * 0.8)
             size.height = min(size.height, screen.visibleFrame.height * 0.8)
         }
-        size.width = max(size.width, 560)
+        // Wide enough that the toolbar's tool groups and actions never collide.
+        size.width = max(size.width, 720)
         size.height = max(size.height, 420)
         window.setContentSize(size)
         window.center()
@@ -288,7 +340,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     }
 
     private func refreshChrome() {
-        for (tool, button) in railButtons {
+        for (tool, button) in toolButtons {
             let selected = tool == canvas.tool
             button.layer?.backgroundColor = selected ? NSColor.controlAccentColor.cgColor : nil
             button.contentTintColor = selected ? .white : .secondaryLabelColor
@@ -303,11 +355,19 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             view.removeFromSuperview()
         }
         if canvas.cropActive {
+            let aspect = NSSegmentedControl(
+                labels: Self.cropAspects.map(\.label),
+                trackingMode: .selectOne, target: self, action: #selector(cropAspectChanged(_:)))
+            aspect.controlSize = .small
+            aspect.selectedSegment = Self.cropAspects.firstIndex {
+                $0.ratio == canvas.cropAspect
+            } ?? 0
             let apply = NSButton(title: "Apply", target: self, action: #selector(applyCropTapped))
             apply.keyEquivalent = "\r"
             apply.controlSize = .small
             let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelCropTapped))
             cancel.controlSize = .small
+            optionsStack.addArrangedSubview(aspect)
             optionsStack.addArrangedSubview(apply)
             optionsStack.addArrangedSubview(cancel)
             return
@@ -408,8 +468,14 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
 
     // MARK: Actions
 
-    @objc private func railTapped(_ sender: NSButton) {
+    @objc private func toolTapped(_ sender: NSButton) {
         selectTool(AnnotatorTool.allCases[sender.tag])
+    }
+
+    @objc private func pinTapped() {
+        guard let still = exportStill() else { return }
+        PinController.shared.pin(still)
+        Toast.show("Pinned", symbol: "pin")
     }
 
     private func selectTool(_ tool: AnnotatorTool) {
@@ -443,6 +509,11 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         if let style = AnnotatorRedactStyle(rawValue: sender.selectedSegment) {
             canvas.applyRedactStyle(style)
         }
+        window.makeFirstResponder(canvas)
+    }
+
+    @objc private func cropAspectChanged(_ sender: NSSegmentedControl) {
+        canvas.cropAspect = Self.cropAspects[sender.selectedSegment].ratio
         window.makeFirstResponder(canvas)
     }
 

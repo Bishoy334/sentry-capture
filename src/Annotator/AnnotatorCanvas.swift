@@ -59,6 +59,30 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
     private(set) var cropActive = false
     private var cropRect: CGRect = .zero
 
+    /// Width:height lock while cropping; nil = free. Setting it refits the
+    /// current crop rect to the ratio, centred, as large as fits.
+    var cropAspect: CGFloat? {
+        didSet {
+            guard cropActive, let aspect = cropAspect, aspect > 0 else {
+                needsDisplay = true
+                return
+            }
+            var w = cropRect.width
+            var h = w / aspect
+            if h > cropRect.height {
+                h = cropRect.height
+                w = h * aspect
+            }
+            w = min(w, pointSize.width)
+            h = min(h, pointSize.height)
+            var origin = CGPoint(x: cropRect.midX - w / 2, y: cropRect.midY - h / 2)
+            origin.x = min(max(origin.x, 0), pointSize.width - w)
+            origin.y = min(max(origin.y, 0), pointSize.height - h)
+            cropRect = CGRect(origin: origin, size: CGSize(width: w, height: h))
+            needsDisplay = true
+        }
+    }
+
     private var drag: Drag = .none
     private var preGesture: State?
 
@@ -202,12 +226,88 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         ctx.addRect(CGRect(origin: .zero, size: pointSize))
         ctx.addRect(cropRect)
         ctx.fillPath(using: .evenOdd)
+
+        // Rule-of-thirds guides make alignment judgeable at a glance.
+        ctx.setStrokeColor(NSColor.white.withAlphaComponent(0.18).cgColor)
+        ctx.setLineWidth(1 / z)
+        for f in [1.0 / 3.0, 2.0 / 3.0] {
+            let x = cropRect.minX + cropRect.width * f
+            let y = cropRect.minY + cropRect.height * f
+            ctx.move(to: CGPoint(x: x, y: cropRect.minY))
+            ctx.addLine(to: CGPoint(x: x, y: cropRect.maxY))
+            ctx.move(to: CGPoint(x: cropRect.minX, y: y))
+            ctx.addLine(to: CGPoint(x: cropRect.maxX, y: y))
+        }
+        ctx.strokePath()
+
         ctx.setStrokeColor(NSColor.white.cgColor)
         ctx.setLineWidth(1 / z)
         ctx.stroke(cropRect)
-        for (_, p) in AnnotatorHit.rectHandles(cropRect) {
-            drawHandle(at: p, in: ctx, zoom: z, accent: .controlAccentColor)
+
+        // Big corner brackets + edge bars: crop affordances are grabbed, not
+        // admired — they scale inversely with zoom to stay finger-sized.
+        let arm = min(18 / z, cropRect.width / 3, cropRect.height / 3)
+        let thick = 3 / z
+        ctx.setStrokeColor(NSColor.white.cgColor)
+        ctx.setLineWidth(thick)
+        ctx.setLineCap(.square)
+        let r = cropRect.insetBy(dx: -thick / 2, dy: -thick / 2)
+        let corners: [(CGPoint, CGPoint, CGPoint)] = [
+            (CGPoint(x: r.minX, y: r.minY + arm), CGPoint(x: r.minX, y: r.minY), CGPoint(x: r.minX + arm, y: r.minY)),
+            (CGPoint(x: r.maxX - arm, y: r.minY), CGPoint(x: r.maxX, y: r.minY), CGPoint(x: r.maxX, y: r.minY + arm)),
+            (CGPoint(x: r.maxX, y: r.maxY - arm), CGPoint(x: r.maxX, y: r.maxY), CGPoint(x: r.maxX - arm, y: r.maxY)),
+            (CGPoint(x: r.minX + arm, y: r.maxY), CGPoint(x: r.minX, y: r.maxY), CGPoint(x: r.minX, y: r.maxY - arm)),
+        ]
+        for (a, corner, b) in corners {
+            ctx.move(to: a)
+            ctx.addLine(to: corner)
+            ctx.addLine(to: b)
         }
+        ctx.strokePath()
+
+        let bar = min(14 / z, cropRect.width / 3, cropRect.height / 3)
+        ctx.setLineWidth(thick)
+        for (handle, p) in AnnotatorHit.rectHandles(cropRect) {
+            switch handle {
+            case .top, .bottom:
+                ctx.move(to: CGPoint(x: p.x - bar / 2, y: p.y))
+                ctx.addLine(to: CGPoint(x: p.x + bar / 2, y: p.y))
+            case .left, .right:
+                ctx.move(to: CGPoint(x: p.x, y: p.y - bar / 2))
+                ctx.addLine(to: CGPoint(x: p.x, y: p.y + bar / 2))
+            default:
+                continue
+            }
+        }
+        ctx.strokePath()
+
+        drawCropDimensions(in: ctx, zoom: z)
+    }
+
+    private func drawCropDimensions(in ctx: CGContext, zoom z: CGFloat) {
+        let px = "\(Int((cropRect.width * imageScale).rounded())) × \(Int((cropRect.height * imageScale).rounded())) px"
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 11 / z, weight: .medium),
+            .foregroundColor: NSColor.white,
+        ]
+        let text = NSAttributedString(string: px, attributes: attributes)
+        let size = text.size()
+        let pad = 5 / z
+        var origin = CGPoint(
+            x: cropRect.maxX - size.width - pad * 2 - 4 / z,
+            y: cropRect.maxY - size.height - pad * 2 - 4 / z)
+        // Tiny crops: park the label just below instead of inside.
+        if size.width + pad * 4 > cropRect.width || size.height + pad * 4 > cropRect.height {
+            origin = CGPoint(x: cropRect.minX, y: cropRect.maxY + 4 / z)
+        }
+        let pill = CGRect(
+            x: origin.x, y: origin.y,
+            width: size.width + pad * 2, height: size.height + pad * 2)
+        ctx.setFillColor(NSColor.black.withAlphaComponent(0.65).cgColor)
+        let path = CGPath(roundedRect: pill, cornerWidth: 4 / z, cornerHeight: 4 / z, transform: nil)
+        ctx.addPath(path)
+        ctx.fillPath()
+        text.draw(at: CGPoint(x: pill.minX + pad, y: pill.minY + pad))
     }
 
     // MARK: Mouse
@@ -298,8 +398,9 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
     }
 
     private func cropMouseDown(at p: CGPoint) {
+        // Crop affordances are deliberately fat — 20pt effective targets.
         if let handle = AnnotatorHit.handleHit(
-            AnnotatorHit.rectHandles(cropRect), at: p, slop: 12 / zoom) {
+            AnnotatorHit.rectHandles(cropRect), at: p, slop: 20 / zoom) {
             drag = .cropResize(handle: handle, original: cropRect)
         } else if cropRect.contains(p) {
             drag = .cropMove(last: p)
@@ -334,7 +435,13 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
                 }
             }
         case .cropNew(let anchor):
-            cropRect = AnnotatorGeo.rect(from: anchor, to: clampedToCanvas(p))
+            let target = clampedToCanvas(p)
+            if let aspect = cropAspect {
+                cropRect = aspectRect(from: anchor, to: target, aspect: aspect)
+                    .intersection(CGRect(origin: .zero, size: pointSize))
+            } else {
+                cropRect = snappedCrop(AnnotatorGeo.rect(from: anchor, to: target))
+            }
             needsDisplay = true
         case .cropMove(let last):
             var r = cropRect
@@ -344,7 +451,7 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
             drag = .cropMove(last: p)
             needsDisplay = true
         case .cropResize(let handle, let original):
-            cropRect = AnnotatorHit.resize(original, handle: handle, to: clampedToCanvas(p))
+            cropRect = cropResized(original: original, handle: handle, to: clampedToCanvas(p))
             needsDisplay = true
         }
     }
@@ -508,6 +615,70 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
 
     private func clampedToCanvas(_ p: CGPoint) -> CGPoint {
         CGPoint(x: min(max(p.x, 0), pointSize.width), y: min(max(p.y, 0), pointSize.height))
+    }
+
+    // MARK: Crop geometry
+
+    /// Anchor-fixed rect obeying a width:height ratio; the dominant drag axis
+    /// wins so the rect tracks the cursor naturally.
+    private func aspectRect(from anchor: CGPoint, to p: CGPoint, aspect: CGFloat) -> CGRect {
+        let sx: CGFloat = p.x < anchor.x ? -1 : 1
+        let sy: CGFloat = p.y < anchor.y ? -1 : 1
+        var dx = abs(p.x - anchor.x)
+        var dy = abs(p.y - anchor.y)
+        if dx / aspect >= dy {
+            dy = dx / aspect
+        } else {
+            dx = dy * aspect
+        }
+        return CGRect(
+            x: min(anchor.x, anchor.x + sx * dx),
+            y: min(anchor.y, anchor.y + sy * dy),
+            width: dx, height: dy)
+    }
+
+    private func cropResized(original: CGRect, handle: AnnotatorHandle, to p: CGPoint) -> CGRect {
+        guard let aspect = cropAspect, aspect > 0 else {
+            return snappedCrop(AnnotatorHit.resize(original, handle: handle, to: p))
+        }
+        let constrained: CGRect
+        switch handle {
+        case .topLeft:
+            constrained = aspectRect(from: CGPoint(x: original.maxX, y: original.maxY), to: p, aspect: aspect)
+        case .topRight:
+            constrained = aspectRect(from: CGPoint(x: original.minX, y: original.maxY), to: p, aspect: aspect)
+        case .bottomLeft:
+            constrained = aspectRect(from: CGPoint(x: original.maxX, y: original.minY), to: p, aspect: aspect)
+        case .bottomRight:
+            constrained = aspectRect(from: CGPoint(x: original.minX, y: original.minY), to: p, aspect: aspect)
+        case .top, .bottom:
+            var r = AnnotatorHit.resize(original, handle: handle, to: p)
+            let w = r.height * aspect
+            r.origin.x = original.midX - w / 2
+            r.size.width = w
+            constrained = r
+        case .left, .right:
+            var r = AnnotatorHit.resize(original, handle: handle, to: p)
+            let h = r.width / aspect
+            r.origin.y = original.midY - h / 2
+            r.size.height = h
+            constrained = r
+        case .lineStart, .lineEnd:
+            constrained = original
+        }
+        return constrained.intersection(CGRect(origin: .zero, size: pointSize))
+    }
+
+    /// Free-crop edges glue to the image edges within 8pt — releasing a hair
+    /// short of the border is the most common crop miss.
+    private func snappedCrop(_ r: CGRect) -> CGRect {
+        let tolerance = 8 / zoom
+        var minX = r.minX, minY = r.minY, maxX = r.maxX, maxY = r.maxY
+        if abs(minX) < tolerance { minX = 0 }
+        if abs(minY) < tolerance { minY = 0 }
+        if abs(maxX - pointSize.width) < tolerance { maxX = pointSize.width }
+        if abs(maxY - pointSize.height) < tolerance { maxY = pointSize.height }
+        return CGRect(x: minX, y: minY, width: max(maxX - minX, 0), height: max(maxY - minY, 0))
     }
 
     // MARK: Style application (options bar)
