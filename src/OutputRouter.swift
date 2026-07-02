@@ -18,22 +18,33 @@ final class OutputRouter {
         let settings = Settings.shared
         if settings.playSound { playCaptureSound() }
 
+        var still = still
         var delivered = DeliveredCapture(payload: .still(still), fileURL: nil)
-        // Save before copying: the pasteboard's file-URL representation must
-        // point at a file that already exists or Finder paste breaks. When
-        // both sinks want PNG, encode once and share the bytes — a scrolling
-        // composite costs seconds per encode.
+        // Persist before copying: the pasteboard's file-URL representation
+        // must point at a file that already exists or Finder paste breaks.
+        // When both sinks want PNG, encode once and share the bytes — a
+        // scrolling composite costs seconds per encode.
         var sharedPNG: Data?
-        if settings.saveToDisk {
-            if settings.imageFormat == .png {
+        // "Every sink off" still persists — a capture that goes nowhere is lost.
+        let persist = settings.saveToDisk
+            || (!settings.copyToClipboard && !settings.showQuickAccess)
+        if persist {
+            let format = settings.imageFormat
+            let data: Data?
+            if format == .png {
                 sharedPNG = encode(still, format: .png)
-                if let sharedPNG {
-                    let url = nextFileURL(ext: "png")
-                    delivered.fileURL = writeData(sharedPNG, to: url) ? url : nil
-                    if delivered.fileURL != nil { addRecent(url) }
-                }
+                data = sharedPNG
             } else {
-                delivered.fileURL = save(still)
+                data = encode(still, format: format)
+            }
+            if let data, let record = SentryStore.shared.createStillRecord(
+                still, data: data,
+                fileName: nextFileName(ext: format.fileExtension),
+                mimeType: format.mimeType
+            ) {
+                still.recordID = record.id
+                delivered = DeliveredCapture(payload: .still(still), fileURL: record.mediaURL)
+                addRecent(record.mediaURL)
             }
         }
         if settings.copyToClipboard {
@@ -41,26 +52,24 @@ final class OutputRouter {
         }
         if settings.showQuickAccess {
             QuickAccessOverlay.shared.push(delivered)
-        } else if delivered.fileURL == nil && !settings.copyToClipboard {
-            // Every sink is off — save anyway so the capture isn't silently lost.
-            delivered.fileURL = save(still)
         }
     }
 
     func deliver(_ video: VideoCapture) {
         let settings = Settings.shared
         var delivered = DeliveredCapture(payload: .video(video), fileURL: nil)
-        // Recordings always land on disk: move from the temp location into place.
-        let dest = nextFileURL(ext: video.isGIF ? "gif" : "mp4")
-        do {
-            try FileManager.default.createDirectory(
-                at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try FileManager.default.moveItem(at: video.url, to: dest)
-            delivered.fileURL = dest
-            addRecent(dest)
-        } catch {
-            NSLog("failed to move recording into place: \(error)")
-            Toast.show("Could not save recording", symbol: "exclamationmark.triangle")
+        // Recordings always land in the store: move from the temp location.
+        if let record = SentryStore.shared.createVideoRecord(
+            tempURL: video.url,
+            fileName: nextFileName(ext: video.isGIF ? "gif" : "mp4"),
+            isGIF: video.isGIF,
+            origin: video.origin,
+            durationSeconds: video.durationSeconds
+        ) {
+            delivered.fileURL = record.mediaURL
+            addRecent(record.mediaURL)
+        } else {
+            // Store already toasted; leave the temp file reachable.
             delivered.fileURL = video.url
         }
         if settings.copyToClipboard, let url = delivered.fileURL {
@@ -70,6 +79,29 @@ final class OutputRouter {
         if settings.showQuickAccess {
             QuickAccessOverlay.shared.push(delivered)
         }
+    }
+
+    /// The single finalisation path for edited captures — annotator Save and
+    /// QAO/pin re-saves land here so the capture's record updates in place
+    /// (and the integration surface sees one evolving record, not forks).
+    /// Creates a record when the capture never persisted in the first place.
+    @discardableResult
+    func reExport(_ still: StillCapture, annotationCount: Int? = nil) -> URL? {
+        if let id = still.recordID, let manifest = SentryStore.shared.loadManifest(for: id) {
+            let format: ImageFormat = manifest.media.type == "image/jpeg" ? .jpg : .png
+            guard let data = encode(still, format: format) else { return nil }
+            return SentryStore.shared.updateStillMedia(
+                recordID: id, still: still, data: data, annotationCount: annotationCount)
+        }
+        let format = Settings.shared.imageFormat
+        guard let data = encode(still, format: format) else { return nil }
+        guard let record = SentryStore.shared.createStillRecord(
+            still, data: data,
+            fileName: nextFileName(ext: format.fileExtension),
+            mimeType: format.mimeType
+        ) else { return nil }
+        addRecent(record.mediaURL)
+        return record.mediaURL
     }
 
     // MARK: Clipboard

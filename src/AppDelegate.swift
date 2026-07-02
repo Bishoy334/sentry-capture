@@ -188,12 +188,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// Selection → pixels, routing window picks to the window capturer.
+    /// Origin metadata rides along for the record manifest.
     private func capture(_ selection: SelectionController.Selection) async -> StillCapture? {
         do {
+            var still: StillCapture
             if let window = selection.window {
-                return try await CaptureEngine.shared.captureWindow(window)
+                still = try await CaptureEngine.shared.captureWindow(window)
+                still.origin = CaptureOrigin(
+                    appBundleID: window.owningApplication?.bundleIdentifier,
+                    appName: window.owningApplication?.applicationName,
+                    windowTitle: window.title,
+                    displayID: selection.display.displayID)
+            } else {
+                let origin = CaptureOrigin.frontmost(displayID: selection.display.displayID)
+                still = try await CaptureEngine.shared.captureRect(selection.rect)
+                still.origin = origin
             }
-            return try await CaptureEngine.shared.captureRect(selection.rect)
+            return still
         } catch {
             Toast.show(error.localizedDescription, symbol: "exclamationmark.triangle")
             return nil
@@ -202,7 +213,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func runCapture(_ work: @escaping () async throws -> StillCapture) async {
         do {
-            let still = try await work()
+            let origin = CaptureOrigin.frontmost()
+            var still = try await work()
+            if still.origin == nil { still.origin = origin }
             OutputRouter.shared.deliver(still)
         } catch {
             Toast.show(error.localizedDescription, symbol: "exclamationmark.triangle")

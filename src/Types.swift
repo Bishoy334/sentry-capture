@@ -6,6 +6,28 @@ enum StillSource {
     case area, window, fullscreen, scrolling
 }
 
+/// What the capture was of — feeds the record manifest's `source` block so
+/// downstream Sentry apps know which app/window a capture came from.
+struct CaptureOrigin {
+    var appBundleID: String?
+    var appName: String?
+    var windowTitle: String?
+    var displayID: UInt32?
+
+    /// The frontmost app at capture time — the best guess for area and
+    /// fullscreen captures, where no specific window was picked.
+    @MainActor
+    static func frontmost(displayID: UInt32? = nil) -> CaptureOrigin {
+        let app = NSWorkspace.shared.frontmostApplication
+        return CaptureOrigin(
+            appBundleID: app?.bundleIdentifier,
+            appName: app?.localizedName,
+            windowTitle: nil,
+            displayID: displayID
+        )
+    }
+}
+
 /// A captured still image. `image` is at native pixel resolution; `scale` is
 /// pixels-per-point (2 on retina), so point dimensions = pixel dimensions / scale.
 struct StillCapture {
@@ -15,6 +37,11 @@ struct StillCapture {
     /// Where on screen the capture came from, in global CG top-left-origin points.
     /// nil for composites (scrolling capture) and annotator exports.
     let screenRect: CGRect?
+    /// Capture-time provenance for the record manifest.
+    var origin: CaptureOrigin? = nil
+    /// The Sentry record this capture belongs to, once delivered — re-exports
+    /// (annotator/QAO/pin saves) update that record instead of forking.
+    var recordID: String? = nil
 
     var pointSize: NSSize {
         NSSize(width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale)
@@ -24,6 +51,8 @@ struct StillCapture {
 struct VideoCapture {
     let url: URL
     let isGIF: Bool
+    var origin: CaptureOrigin? = nil
+    var durationSeconds: Double? = nil
 }
 
 /// A capture after OutputRouter has applied the after-capture actions.

@@ -464,7 +464,7 @@ private final class QAOCardView: NSView, NSDraggingSource {
         if let url = item.fileURL {
             NSWorkspace.shared.activateFileViewerSelecting([url])
         } else if case .still(let still) = item.payload {
-            guard let url = OutputRouter.shared.save(still) else { return }
+            guard let url = OutputRouter.shared.reExport(still) else { return }
             item.fileURL = url
             saveButton?.setSymbol("magnifyingglass", tooltip: "Reveal in Finder")
             Toast.show("Saved", symbol: "arrow.down.circle")

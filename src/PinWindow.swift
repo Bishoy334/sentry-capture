@@ -218,7 +218,7 @@ private final class PinContentView: NSView {
     }
 
     @objc private func saveAction() {
-        if OutputRouter.shared.save(still) != nil {
+        if OutputRouter.shared.reExport(still) != nil {
             Toast.show("Saved", symbol: "arrow.down.circle")
         }
     }

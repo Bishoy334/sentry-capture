@@ -30,7 +30,11 @@ final class ScrollingCaptureController {
             Toast.show("Selection too small for scrolling capture", symbol: "rectangle.dashed")
             return
         }
-        let session = ScrollingSession(rect: rect, display: selection.display) { [weak self] in
+        let session = ScrollingSession(
+            rect: rect,
+            display: selection.display,
+            origin: CaptureOrigin.frontmost(displayID: selection.display.displayID)
+        ) { [weak self] in
             self?.session = nil
         }
         self.session = session
@@ -45,6 +49,7 @@ private final class ScrollingSession {
     /// Capture region, global CG top-left points.
     private let rect: CGRect
     private let display: SCDisplay
+    private let origin: CaptureOrigin?
     private let onEnd: () -> Void
     private let flags = ScrollingSessionFlags()
 
@@ -55,9 +60,10 @@ private final class ScrollingSession {
     private var uiTornDown = false
     private var ended = false
 
-    init(rect: CGRect, display: SCDisplay, onEnd: @escaping () -> Void) {
+    init(rect: CGRect, display: SCDisplay, origin: CaptureOrigin?, onEnd: @escaping () -> Void) {
         self.rect = rect
         self.display = display
+        self.origin = origin
         self.onEnd = onEnd
     }
 
@@ -267,7 +273,8 @@ private final class ScrollingSession {
     func concludeFinished(with still: StillCapture?) {
         guard !ended else { return }
         teardownUI()
-        if let still {
+        if var still {
+            still.origin = origin
             OutputRouter.shared.deliver(still)
         } else {
             Toast.show("Scrolling capture failed", symbol: "exclamationmark.triangle")

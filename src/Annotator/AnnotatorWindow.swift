@@ -53,6 +53,8 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     private let canvas: AnnotatorCanvas
     private let scrollView = NSScrollView()
     private let source: StillSource
+    private let origin: CaptureOrigin?
+    private let recordID: String?
     private let windowUndoManager = UndoManager()
 
     private var railButtons: [(tool: AnnotatorTool, button: NSButton)] = []
@@ -69,6 +71,8 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
 
     init(still: StillCapture) {
         source = still.source
+        origin = still.origin
+        recordID = still.recordID
         canvas = AnnotatorCanvas(still: still)
         let editorWindow = AnnotatorEditorWindow(
             contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
@@ -458,7 +462,9 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             Toast.show("Could not flatten image", symbol: "exclamationmark.triangle")
             return nil
         }
-        return StillCapture(image: flattened, scale: canvas.imageScale, source: source, screenRect: nil)
+        return StillCapture(
+            image: flattened, scale: canvas.imageScale, source: source,
+            screenRect: nil, origin: origin, recordID: recordID)
     }
 
     @objc private func copyTapped() {
@@ -469,7 +475,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
 
     @objc private func saveTapped() {
         guard let still = exportStill() else { return }
-        if OutputRouter.shared.save(still) != nil {
+        if OutputRouter.shared.reExport(still, annotationCount: canvas.annotations.count) != nil {
             Toast.show("Saved", symbol: "square.and.arrow.down")
         }
     }

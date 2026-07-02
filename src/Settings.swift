@@ -6,6 +6,7 @@ enum ImageFormat: String, CaseIterable, Codable {
     case png, jpg
 
     var fileExtension: String { rawValue }
+    var mimeType: String { self == .png ? "image/png" : "image/jpeg" }
 }
 
 final class Settings: ObservableObject {
@@ -49,7 +50,16 @@ final class Settings: ObservableObject {
     private var sinks: Set<AnyCancellable> = []
 
     private init() {
-        saveDirectoryPath = d.string(forKey: "saveDirectoryPath") ?? "~/Desktop"
+        // ~/Sentry/ is the ecosystem root — captures are records other Sentry
+        // apps read (see SENTRY_SCHEMA.md). One-shot migration from the
+        // round-1 Desktop default; a later deliberate choice of ~/Desktop
+        // sticks because the flag only fires once.
+        var storedPath = d.string(forKey: "saveDirectoryPath") ?? "~/Sentry/captures"
+        if storedPath == "~/Desktop", !d.bool(forKey: "migratedToSentryRoot") {
+            storedPath = "~/Sentry/captures"
+        }
+        d.set(true, forKey: "migratedToSentryRoot")
+        saveDirectoryPath = storedPath
         filenamePrefix = d.string(forKey: "filenamePrefix") ?? "Sentry Capture"
         imageFormat = ImageFormat(rawValue: d.string(forKey: "imageFormat") ?? "") ?? .png
         copyToClipboard = d.object(forKey: "copyToClipboard") as? Bool ?? true

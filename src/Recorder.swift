@@ -31,6 +31,7 @@ final class RecordingController {
     private var phase: Phase = .idle
     private var selection: SelectionController.Selection?
     private var asGIF = false
+    private var origin: CaptureOrigin?
 
     private var stream: SCStream?
     private var recordingOutput: SCRecordingOutput?
@@ -58,6 +59,17 @@ final class RecordingController {
 
         self.selection = selection
         self.asGIF = asGIF
+        // Provenance for the record manifest, resolved while the captured
+        // context is still frontmost (the control strip never activates us).
+        if let window = selection.window {
+            origin = CaptureOrigin(
+                appBundleID: window.owningApplication?.bundleIdentifier,
+                appName: window.owningApplication?.applicationName,
+                windowTitle: window.title,
+                displayID: selection.display.displayID)
+        } else {
+            origin = CaptureOrigin.frontmost(displayID: selection.display.displayID)
+        }
         phase = .configuring
         showBorderChrome(around: selection.rect)
         showControlStrip(for: selection, asGIF: asGIF)
@@ -286,6 +298,9 @@ final class RecordingController {
 
         let wasGIF = asGIF
         let url = outputURL
+        let capturedOrigin = origin
+        let duration = recordedDuration
+        origin = nil
         recordingOutput = nil
         outputURL = nil
         selection = nil
@@ -312,7 +327,8 @@ final class RecordingController {
                 guard seconds <= 120 else {
                     Toast.show("Recording too long for a GIF — saved as MP4",
                                symbol: "exclamationmark.triangle")
-                    OutputRouter.shared.deliver(VideoCapture(url: url, isGIF: false))
+                    OutputRouter.shared.deliver(VideoCapture(
+                        url: url, isGIF: false, origin: capturedOrigin, durationSeconds: duration))
                     return
                 }
                 Toast.show("Converting to GIF…", symbol: "arrow.triangle.2.circlepath")
@@ -320,16 +336,19 @@ final class RecordingController {
                     let gif = try await GIFExporter.export(
                         from: url, fps: Settings.shared.gifFPS, maxWidth: 1000)
                     try? FileManager.default.removeItem(at: url)
-                    OutputRouter.shared.deliver(VideoCapture(url: gif, isGIF: true))
+                    OutputRouter.shared.deliver(VideoCapture(
+                        url: gif, isGIF: true, origin: capturedOrigin, durationSeconds: duration))
                 } catch {
                     // Keep the mp4 rather than lose the recording.
                     Toast.show("GIF conversion failed — saving as MP4",
                                symbol: "exclamationmark.triangle")
-                    OutputRouter.shared.deliver(VideoCapture(url: url, isGIF: false))
+                    OutputRouter.shared.deliver(VideoCapture(
+                        url: url, isGIF: false, origin: capturedOrigin, durationSeconds: duration))
                 }
             }
         } else {
-            OutputRouter.shared.deliver(VideoCapture(url: url, isGIF: false))
+            OutputRouter.shared.deliver(VideoCapture(
+                url: url, isGIF: false, origin: capturedOrigin, durationSeconds: duration))
         }
     }
 
