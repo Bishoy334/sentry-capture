@@ -1413,6 +1413,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             refreshEffectThumbs()
         }
         inspectorWidth.constant = adjustActive ? 190 : 0
+        panelWidthChanged(by: adjustActive ? 190 : -190)
         refreshChrome()
     }
 
@@ -1513,6 +1514,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             rebuildBackgroundSidebar()
         }
         sidebarWidth.constant = backgroundBarActive ? 190 : 0
+        panelWidthChanged(by: backgroundBarActive ? 190 : -190)
         refreshChrome()
     }
 
@@ -1711,6 +1713,23 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     private func zoomOutToFitIfNeeded() {
         guard let fit = fitMagnification(), fit < scrollView.magnification else { return }
         setZoom(min(fit, 1))
+    }
+
+    /// A side panel must never eat the canvas: grow the window by the
+    /// panel's width (give it back on close), clamped to the screen; any
+    /// remainder the screen can't absorb is handled by zooming out to fit.
+    private func panelWidthChanged(by delta: CGFloat) {
+        guard delta != 0 else { return }
+        var frame = window.frame
+        frame.size.width += delta
+        if let screen = window.screen?.visibleFrame {
+            frame.size.width = min(frame.width, screen.width)
+            if frame.maxX > screen.maxX { frame.origin.x = screen.maxX - frame.width }
+            if frame.minX < screen.minX { frame.origin.x = screen.minX }
+        }
+        window.setFrame(frame, display: true)
+        window.contentView?.layoutSubtreeIfNeeded()
+        zoomOutToFitIfNeeded()
     }
 
     private func zoom(by factor: CGFloat) {
