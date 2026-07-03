@@ -1317,7 +1317,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
 
     @objc private func saveAsTapped() {
         guard let still = exportStill() else { return }
-        OutputRouter.shared.saveAs(still, over: window)
+        ExportSheetController.present(over: window, image: still.image, dpiScale: still.scale)
     }
 
     // MARK: Key handling
@@ -1348,6 +1348,8 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         switch (ch, shift) {
         case ("c", false):
             copyTapped()
+        case ("v", false):
+            canvas.pasteFromClipboard()
         case ("s", false):
             saveTapped()
         case ("s", true):

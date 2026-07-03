@@ -397,6 +397,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(item("Unlock All Pins", #selector(unlockPins), key: ""))
         }
         menu.addItem(item("Open Captures Folder", #selector(openCapturesFolder), key: ""))
+        menu.addItem(item("Clean Up Clipboard Image", #selector(cleanClipboard), key: ""))
         menu.addItem(.separator())
         menu.addItem(item("Settings…", #selector(showPreferences), key: ","))
         menu.addItem(item("Quit Sentry Capture", #selector(quit), key: "q"))
@@ -460,6 +461,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openCapturesFolder() {
         NSWorkspace.shared.open(Settings.shared.saveDirectory)
+    }
+
+    @objc private func cleanClipboard() {
+        ImageExporter.cleanUpClipboard()
     }
 
     @objc private func showPreferences() {

@@ -339,9 +339,28 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
               let cg = dropped.cgImage(forProposedRect: nil, context: nil, hints: nil)
         else { return false }
         let viewPoint = convert(sender.draggingLocation, from: nil)
-        let p = CGPoint(
+        addImageObject(cg, centredAt: CGPoint(
             x: viewPoint.x - imageOriginInView.x,
-            y: viewPoint.y - imageOriginInView.y)
+            y: viewPoint.y - imageOriginInView.y))
+        return true
+    }
+
+    /// Paste→PNG (plan Phase C): NSImage(pasteboard:) normalises whatever
+    /// flavour is on the clipboard (PDF, TIFF, file URL, promise) into
+    /// pixels, landing as a floating image object mid-view.
+    func pasteFromClipboard() {
+        guard let pasted = NSImage(pasteboard: .general),
+              let cg = pasted.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            Toast.show("No image on the clipboard", symbol: "doc.on.clipboard")
+            return
+        }
+        let visible = visibleRect
+        addImageObject(cg, centredAt: CGPoint(
+            x: visible.midX - imageOriginInView.x,
+            y: visible.midY - imageOriginInView.y))
+    }
+
+    private func addImageObject(_ cg: CGImage, centredAt p: CGPoint) {
         let pre = snapshot()
         var a = AnnotatorAnnotation(kind: .image)
         a.imageRef = AnnotatorImageRef(image: cg)
@@ -360,7 +379,6 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         setNeedsDisplay(AnnotatorGeo.displayBounds(of: a))
         registerUndo(pre, name: "Add Image")
         onStateChange?()
-        return true
     }
 
     /// Drops an emoji sticker at the image centre, selected and ready to move.

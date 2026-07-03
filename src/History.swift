@@ -326,6 +326,15 @@ private struct HistoryCard: View {
                     }
                 }
             }
+            if record.manifest.kind != "recording" {
+                Menu("Convert To") {
+                    ForEach(ExportFormat.allCases, id: \.self) { format in
+                        Button(format.label) {
+                            ImageExporter.convertFlow(fileURL: record.mediaURL, to: format)
+                        }
+                    }
+                }
+            }
             Divider()
             Button("Move to Bin", role: .destructive) {
                 SentryStore.shared.trashRecord(record)

@@ -664,6 +664,17 @@ private final class QAOCardView: NSView, NSDraggingSource {
             add("Annotate", #selector(annotateAction))
             add("Pin", #selector(pinAction))
             add("Copy Text", #selector(copyTextAction))
+            let convertItem = NSMenuItem(title: "Convert To", action: nil, keyEquivalent: "")
+            let submenu = NSMenu()
+            for format in ExportFormat.allCases {
+                let entry = NSMenuItem(
+                    title: format.label, action: #selector(convertAction(_:)), keyEquivalent: "")
+                entry.target = self
+                entry.representedObject = format.rawValue
+                submenu.addItem(entry)
+            }
+            convertItem.submenu = submenu
+            menu.addItem(convertItem)
         }
         if isEditableVideo {
             add("Edit", #selector(editVideoAction))
@@ -743,6 +754,15 @@ private final class QAOCardView: NSView, NSDraggingSource {
     @objc private func copyTextAction() {
         guard case .still(let still) = item.payload else { return }
         OutputRouter.shared.copyText(from: still)
+    }
+
+    @objc private func convertAction(_ sender: NSMenuItem) {
+        guard case .still(let still) = item.payload,
+              let raw = sender.representedObject as? String,
+              let format = ExportFormat(rawValue: raw) else { return }
+        let name = item.fileURL?.deletingPathExtension().lastPathComponent ?? "Capture"
+        ImageExporter.convertFlow(
+            image: still.image, dpiScale: still.scale, suggestedName: name, to: format)
     }
 
     @objc private func trashAction() {
