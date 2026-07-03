@@ -830,17 +830,13 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         refreshCanvasBounds()
         // A big redact drew a placeholder during the drag — with the gesture
         // over, redraw so the real patch renders.
-        if case .drawRect(let id, _) = drag, let a = annotation(id), a.kind == .redact {
-            drag = .none
+        let draggedID: UUID? = switch drag {
+        case .drawRect(let id, _), .move(let id, _), .resize(let id, _, _): id
+        default: nil
+        }
+        drag = .none
+        if let a = draggedID.flatMap(annotation), a.kind == .redact {
             setNeedsDisplay(AnnotatorGeo.displayBounds(of: a))
-        } else if case .move(let id, _) = drag, let a = annotation(id), a.kind == .redact {
-            drag = .none
-            setNeedsDisplay(AnnotatorGeo.displayBounds(of: a))
-        } else if case .resize(let id, _, _) = drag, let a = annotation(id), a.kind == .redact {
-            drag = .none
-            setNeedsDisplay(AnnotatorGeo.displayBounds(of: a))
-        } else {
-            drag = .none
         }
     }
 
