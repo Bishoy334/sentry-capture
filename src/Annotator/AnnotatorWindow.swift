@@ -88,6 +88,8 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     /// Index 0 = None, then EffectPreset.allCases order.
     private var effectButtons: [NSButton] = []
     private var effectThumbsBase: CGImage?
+    private let curveView = CurveEditorView()
+    private var advancedToggle: NSButton!
     private var undoButton: NSButton!
     private var redoButton: NSButton!
     private let zoomLabel = NSTextField(labelWithString: "100%")
@@ -720,6 +722,42 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             adjustSliders.append(slider)
             adjustResets.append(reset)
         }
+
+        // Advanced: the curves widget (its endpoints double as levels).
+        advancedToggle = NSButton(
+            title: "ADVANCED", target: self, action: #selector(advancedTapped))
+        advancedToggle.isBordered = false
+        advancedToggle.imagePosition = .imageTrailing
+        advancedToggle.image = NSImage(
+            systemSymbolName: "chevron.right", accessibilityDescription: "Expand")?
+            .withSymbolConfiguration(.init(pointSize: 8, weight: .semibold))
+        advancedToggle.contentTintColor = .tertiaryLabelColor
+        advancedToggle.attributedTitle = NSAttributedString(
+            string: "ADVANCED", attributes: [
+                .font: NSFont.systemFont(ofSize: 10, weight: .semibold),
+                .foregroundColor: NSColor.tertiaryLabelColor,
+                .kern: 0.8,
+            ])
+        inspectorStack.addArrangedSubview(advancedToggle)
+        curveView.isHidden = true
+        curveView.translatesAutoresizingMaskIntoConstraints = false
+        curveView.widthAnchor.constraint(equalToConstant: 162).isActive = true
+        curveView.heightAnchor.constraint(equalToConstant: 130).isActive = true
+        curveView.onChange = { [weak self] points in
+            guard let self else { return }
+            var a = canvas.adjustments
+            a.curvePoints = points
+            canvas.setAdjustments(a)
+        }
+        inspectorStack.addArrangedSubview(curveView)
+    }
+
+    @objc private func advancedTapped() {
+        curveView.isHidden.toggle()
+        advancedToggle.image = NSImage(
+            systemSymbolName: curveView.isHidden ? "chevron.right" : "chevron.down",
+            accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 8, weight: .semibold))
     }
 
     /// Push the canvas's adjustment values back into the controls (panel
@@ -735,6 +773,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         for (i, button) in effectButtons.enumerated() {
             button.layer?.borderWidth = i == selected ? 2 : 0
         }
+        curveView.points = a.curvePoints
     }
 
     /// Render the effect thumbnails from the current base — tiny Lanczos
@@ -759,11 +798,13 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
                 }
             }
             let rendered = thumbs
+            let bins = CurveMath.histogram(of: small)
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 for (i, thumb) in rendered.enumerated() where i < effectButtons.count {
                     effectButtons[i].image = thumb
                 }
+                curveView.histogram = bins
             }
         }
     }

@@ -85,6 +85,14 @@ enum EffectPreset: String, CaseIterable {
 struct ImageAdjustments: Equatable {
     var values: [CGFloat] = AdjustParam.allCases.map { CGFloat($0.range.neutral) }
     var effect: EffectPreset?
+    /// RGB tone curve control points, normalised 0…1, sorted by x. The two
+    /// endpoints stay at x = 0 and x = 1 but move vertically — that IS the
+    /// levels control (black/white point); no separate levels UI.
+    var curvePoints: [CGPoint] = ImageAdjustments.identityCurve
+
+    static let identityCurve = [CGPoint(x: 0, y: 0), CGPoint(x: 1, y: 1)]
+
+    var curveIsIdentity: Bool { curvePoints == Self.identityCurve }
 
     subscript(_ p: AdjustParam) -> CGFloat {
         get { values[p.rawValue] }
@@ -92,7 +100,7 @@ struct ImageAdjustments: Equatable {
     }
 
     var isIdentity: Bool {
-        effect == nil
+        effect == nil && curveIsIdentity
             && AdjustParam.allCases.allSatisfy { abs(self[$0] - CGFloat($0.range.neutral)) < 0.0001 }
     }
 
@@ -211,8 +219,29 @@ struct ImageAdjustments: Equatable {
             f.intensity = Float(self[.sharpen])
             img = f.outputImage ?? img
         }
+        if !curveIsIdentity {
+            // Sample the spline into CIColorCurves' RGB table (research §3:
+            // the multi-node curves filter; CIToneCurve is capped at 5 points).
+            let count = 256
+            var samples = [Float]()
+            samples.reserveCapacity(count * 3)
+            for i in 0..<count {
+                let y = Float(CurveMath.value(
+                    at: CGFloat(i) / CGFloat(count - 1), points: curvePoints))
+                samples.append(contentsOf: [y, y, y])
+            }
+            let f = CIFilter.colorCurves()
+            f.inputImage = img
+            f.curvesData = samples.withUnsafeBufferPointer { Data(buffer: $0) }
+            f.curvesDomain = CIVector(x: 0, y: 1)
+            f.colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
+            img = f.outputImage ?? img
+        }
         return img
     }
+
+    // ponytail: one RGB curve, no per-channel R/G/B tabs — add channel
+    // tabs to the curve widget if colour grading ever matters here.
 
     /// Full-res render through the app's one CIContext. Identity returns the
     /// input untouched (no needless GPU round-trip).
