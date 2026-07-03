@@ -1,5 +1,15 @@
 # IMAGE_EDITOR_PLAN — "my own little Photoshop"
 
+> **Status (2026-07-03):** Phases A–D, F and G are BUILT (see git log from
+> `1eccf71` onward): subject lift/remove-bg, adjustments inspector +
+> effects/curves/watermark, export dialog + paste/convert, rotate/flip,
+> magnifier callout, video crop/frame-grab/burn-in (with live preview),
+> batch convert, plus Finder "Open With" for images and videos with
+> save-in-place. Phase E (heal/clone) is NOT built. Phase G's ML upscale is
+> an OPEN GATE — owner hasn't approved bundling a Core ML model; Lanczos
+> resize in the export sheet covers upscaling until then. GIF optimisation
+> (Phase F tail) also remains.
+
 The brief, verbatim from the owner: *"I want this to also be a very good image
 editor — things like splicing objects, automatic png, image conversion. It
 should handle anything related to screenshots, images, videos, annotation.
