@@ -323,26 +323,32 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             }
         }
 
+        // Rotate & flip: whole-canvas orientation, menu-driven.
+        let rotate = toolbarIconButton(
+            symbol: "rotate.right", tooltip: "Rotate & Flip",
+            action: #selector(rotateTapped(_:)))
+        stack.insertArrangedSubview(rotate, at: 2)
+
         // Remove Background is an action, not a tool — it fires once and the
         // undo stack holds the result. Lives beside its sibling, lift.
         let removeBG = toolbarIconButton(
             symbol: "person.and.background.dotted", tooltip: "Remove Background",
             action: #selector(removeBackgroundTapped))
-        stack.insertArrangedSubview(removeBG, at: 2)
+        stack.insertArrangedSubview(removeBG, at: 3)
 
         // Background mode is chrome-level, not a canvas tool — its button
         // lives beside crop but toggles the options bar instead of the tool.
         let background = toolbarIconButton(
             symbol: "photo.on.rectangle", tooltip: "Background (B)",
             action: #selector(backgroundTapped))
-        stack.insertArrangedSubview(background, at: 3)
+        stack.insertArrangedSubview(background, at: 4)
         backgroundButton = background
 
         // Adjustments inspector toggle — the right-hand column counterpart.
         let adjust = toolbarIconButton(
             symbol: "slider.horizontal.3", tooltip: "Adjust",
             action: #selector(adjustTapped))
-        stack.insertArrangedSubview(adjust, at: 4)
+        stack.insertArrangedSubview(adjust, at: 5)
         adjustButton = adjust
 
         // Sticker stamps: a one-tap emoji menu, placed as movable annotations.
@@ -1428,6 +1434,31 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         canvas.setAdjustments(auto)
         syncAdjustInspector()
         refreshChrome()
+        window.makeFirstResponder(canvas)
+    }
+
+    @objc private func rotateTapped(_ sender: NSButton) {
+        let menu = NSMenu()
+        let entries: [(String, AnnotatorBaseTransform)] = [
+            ("Rotate Left", .rotateLeft), ("Rotate Right", .rotateRight),
+            ("Flip Horizontal", .flipHorizontal), ("Flip Vertical", .flipVertical),
+        ]
+        for (i, entry) in entries.enumerated() {
+            let item = NSMenuItem(
+                title: entry.0, action: #selector(rotatePicked(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = i
+            menu.addItem(item)
+        }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.maxY + 4), in: sender)
+    }
+
+    @objc private func rotatePicked(_ sender: NSMenuItem) {
+        let transforms: [AnnotatorBaseTransform] = [
+            .rotateLeft, .rotateRight, .flipHorizontal, .flipVertical,
+        ]
+        guard transforms.indices.contains(sender.tag) else { return }
+        canvas.transformBase(transforms[sender.tag])
         window.makeFirstResponder(canvas)
     }
 

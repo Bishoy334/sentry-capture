@@ -119,6 +119,29 @@ enum AnnotatorTextStyle: Int, Equatable, Codable, CaseIterable {
     }
 }
 
+/// Whole-canvas orientation ops (toolbar Rotate & Flip menu).
+enum AnnotatorBaseTransform {
+    case rotateLeft, rotateRight, flipHorizontal, flipVertical
+
+    var orientation: CGImagePropertyOrientation {
+        switch self {
+        case .rotateRight: return .right
+        case .rotateLeft: return .left
+        case .flipHorizontal: return .upMirrored
+        case .flipVertical: return .downMirrored
+        }
+    }
+
+    var undoName: String {
+        switch self {
+        case .rotateRight: return "Rotate Right"
+        case .rotateLeft: return "Rotate Left"
+        case .flipHorizontal: return "Flip Horizontal"
+        case .flipVertical: return "Flip Vertical"
+        }
+    }
+}
+
 enum AnnotatorKind: String, Equatable, Codable {
     case arrow, line, rect, filledRect, ellipse, freehand, highlighter, text, counter, redact, spotlight, image, sticker
 }
@@ -292,6 +315,43 @@ enum AnnotatorGeo {
             bounds = bounds.union(b)
         }
         return bounds.integral
+    }
+
+    /// Point remap for whole-canvas rotate/flip, in top-left image points.
+    static func transform(
+        _ p: CGPoint, by t: AnnotatorBaseTransform, in size: NSSize
+    ) -> CGPoint {
+        switch t {
+        case .rotateRight: return CGPoint(x: size.height - p.y, y: p.x)
+        case .rotateLeft: return CGPoint(x: p.y, y: size.width - p.x)
+        case .flipHorizontal: return CGPoint(x: size.width - p.x, y: p.y)
+        case .flipVertical: return CGPoint(x: p.x, y: size.height - p.y)
+        }
+    }
+
+    /// Remap an annotation's geometry for a base rotate/flip. Glyph-bearing
+    /// kinds (text/counter/sticker) keep their box size and move by centre —
+    /// glyphs stay horizontal regardless of image orientation.
+    static func transform(
+        _ a: AnnotatorAnnotation, by t: AnnotatorBaseTransform, in size: NSSize
+    ) -> AnnotatorAnnotation {
+        var out = a
+        out.start = transform(a.start, by: t, in: size)
+        out.end = transform(a.end, by: t, in: size)
+        out.points = a.points.map { transform($0, by: t, in: size) }
+        let c1 = transform(CGPoint(x: a.rect.minX, y: a.rect.minY), by: t, in: size)
+        let c2 = transform(CGPoint(x: a.rect.maxX, y: a.rect.maxY), by: t, in: size)
+        var mapped = rect(from: c1, to: c2)
+        switch a.kind {
+        case .text, .counter, .sticker:
+            mapped = CGRect(
+                x: mapped.midX - a.rect.width / 2, y: mapped.midY - a.rect.height / 2,
+                width: a.rect.width, height: a.rect.height)
+        default:
+            break
+        }
+        out.rect = mapped
+        return out
     }
 
     static func translate(_ a: AnnotatorAnnotation, by d: CGPoint) -> AnnotatorAnnotation {

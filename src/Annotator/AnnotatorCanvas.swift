@@ -993,6 +993,45 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         onAdjustmentsBaked?()
     }
 
+    // MARK: Rotate / flip
+
+    /// Whole-canvas orientation change: base pixels via CIImage.oriented
+    /// (lossless), annotation geometry remapped, image objects' pixels
+    /// rotated to match. One undoable step.
+    func transformBase(_ t: AnnotatorBaseTransform) {
+        if cropActive { cancelCrop() }
+        bakeAdjustmentsIfNeeded()
+        let ci = CIImage(cgImage: baseImage).oriented(t.orientation)
+        guard let rotated = ImagePipeline.ciContext.createCGImage(ci, from: ci.extent) else {
+            Toast.show("Could not rotate", symbol: "exclamationmark.triangle")
+            return
+        }
+        let pre = snapshot()
+        let oldSize = pointSize
+        baseImage = rotated
+        annotations = annotations.map { a in
+            var out = AnnotatorGeo.transform(a, by: t, in: oldSize)
+            if a.kind == .image, let ref = a.imageRef {
+                let content = CIImage(cgImage: ref.image).oriented(t.orientation)
+                if let cg = ImagePipeline.ciContext.createCGImage(content, from: content.extent) {
+                    out.imageRef = AnnotatorImageRef(image: cg)
+                }
+            }
+            return out
+        }
+        liftSources.removeAll()   // masks are in pre-rotation coordinates
+        redactRenderer.setBase(rotated)
+        patchCache.removeAll()
+        liftEngine.invalidate()
+        canvasRect = AnnotatorGeo.canvasBounds(imageSize: pointSize, annotations: annotations)
+        setFrameSize(canvasRect.size)
+        onCanvasResized?()
+        registerUndo(pre, name: t.undoName)
+        needsDisplay = true
+        onImageChanged?()
+        onStateChange?()
+    }
+
     // MARK: Watermarks
 
     /// Bottom-right translucent text object; double-click edits the wording,
