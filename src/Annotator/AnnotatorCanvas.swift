@@ -72,6 +72,8 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
 
     private let redactRenderer: AnnotatorRedactRenderer
     private var patchCache: [UUID: PatchEntry] = [:]
+    private var magnifierCache:
+        [UUID: (rect: CGRect, source: CGPoint, zoom: CGFloat, patch: (rect: CGRect, image: CGImage)?)] = [:]
 
     /// The base image has see-through pixels (remove-bg, window shadow) —
     /// drives the transparency checker and forces PNG on export.
@@ -272,7 +274,9 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
             if a.tiled {
                 AnnotatorRender.drawTiled(a, in: ctx, canvasHeight: h, over: canvasRect)
             } else {
-                AnnotatorRender.draw(a, in: ctx, canvasHeight: h, redactPatch: nil)
+                AnnotatorRender.draw(
+                    a, in: ctx, canvasHeight: h,
+                    redactPatch: a.kind == .magnifier ? cachedMagnifierPatch(for: a) : nil)
             }
         }
         if !cropActive {
@@ -417,6 +421,19 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         }
         let patch = redactRenderer.patch(forPointRect: a.rect, style: a.redactStyle)
         patchCache[a.id] = PatchEntry(sourceRect: a.rect, style: a.redactStyle, patch: patch)
+        return patch
+    }
+
+    /// Loupe zoom lives in `number` (persists via the existing project
+    /// schema); anything below 2 reads as the 2x default.
+    private func cachedMagnifierPatch(for a: AnnotatorAnnotation) -> (rect: CGRect, image: CGImage)? {
+        let zoom = CGFloat(max(a.number, 2))
+        if let entry = magnifierCache[a.id],
+           entry.rect == a.rect, entry.source == a.start, entry.zoom == zoom {
+            return entry.patch
+        }
+        let patch = redactRenderer.magnifierPatch(rect: a.rect, source: a.start, zoom: zoom)
+        magnifierCache[a.id] = (a.rect, a.start, zoom, patch)
         return patch
     }
 
@@ -609,12 +626,13 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
             a.end = p
             annotations.append(a)
             drag = .drawLine(id: a.id)
-        case .rect, .filledRect, .ellipse, .redact, .spotlight:
+        case .rect, .filledRect, .ellipse, .redact, .spotlight, .magnifier:
             let kind: AnnotatorKind = switch tool {
             case .rect: .rect
             case .filledRect: .filledRect
             case .ellipse: .ellipse
             case .spotlight: .spotlight
+            case .magnifier: .magnifier
             default: .redact
             }
             var a = AnnotatorAnnotation(kind: kind)
@@ -622,6 +640,10 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
             a.lineWidth = currentLineWidth
             a.redactStyle = currentRedactStyle
             a.rect = CGRect(origin: p, size: .zero)
+            if kind == .magnifier {
+                a.start = p       // press on the detail, drag out the loupe
+                a.number = 2      // zoom factor
+            }
             annotations.append(a)
             drag = .drawRect(id: a.id, anchor: p)
         }
@@ -920,6 +942,7 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
             baseTransparent = true
             redactRenderer.setBase(result)
             patchCache.removeAll()
+        magnifierCache.removeAll()
             liftEngine.invalidate()
             registerUndo(pre, name: "Remove Background")
             needsDisplay = true
@@ -987,6 +1010,7 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         adjustedPreview = nil
         redactRenderer.setBase(baked)
         patchCache.removeAll()
+        magnifierCache.removeAll()
         liftEngine.invalidate()
         registerUndo(pre, name: "Adjust")
         needsDisplay = true
@@ -1022,6 +1046,7 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         liftSources.removeAll()   // masks are in pre-rotation coordinates
         redactRenderer.setBase(rotated)
         patchCache.removeAll()
+        magnifierCache.removeAll()
         liftEngine.invalidate()
         canvasRect = AnnotatorGeo.canvasBounds(imageSize: pointSize, annotations: annotations)
         setFrameSize(canvasRect.size)
@@ -1069,6 +1094,13 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
             if let pre = featherPreState { registerUndoIfChanged(pre, name: "Opacity") }
             featherPreState = nil
         }
+    }
+
+    func applyMagnifierZoom(_ zoom: Int) {
+        guard let id = selectedID, let a = annotation(id), a.kind == .magnifier else { return }
+        let pre = snapshot()
+        update(id) { $0.number = zoom }
+        registerUndoIfChanged(pre, name: "Zoom")
     }
 
     func applyTiled(_ tiled: Bool) {
@@ -1279,6 +1311,7 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         let bounds = AnnotatorGeo.displayBounds(of: annotations[i])
         annotations.remove(at: i)
         patchCache.removeValue(forKey: id)
+        magnifierCache.removeValue(forKey: id)
         renumberCounters()
         setNeedsDisplay(bounds)
     }
@@ -1287,6 +1320,7 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
     func restoreAnnotations(_ restored: [AnnotatorAnnotation]) {
         annotations = restored
         patchCache.removeAll()
+        magnifierCache.removeAll()
         canvasRect = AnnotatorGeo.canvasBounds(imageSize: pointSize, annotations: annotations)
         setFrameSize(canvasRect.size)
         onCanvasResized?()
@@ -1532,6 +1566,7 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         baseTransparent = imageLooksTransparent(cropped)
         redactRenderer.setBase(cropped)
         patchCache.removeAll()
+        magnifierCache.removeAll()
         liftEngine.invalidate()
         canvasRect = AnnotatorGeo.canvasBounds(imageSize: pointSize, annotations: annotations)
         setFrameSize(canvasRect.size)
@@ -1730,6 +1765,7 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         selectedID = nil
         selectedIDs = []
         patchCache.removeAll()
+        magnifierCache.removeAll()
         if baseChanged {
             liftEngine.invalidate()
             setHover(IndexSet())
@@ -1757,7 +1793,7 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
     /// any in-flight text editor are excluded by construction.
     func flattened() -> CGImage? {
         AnnotatorRender.composite(base: baseImage, scale: imageScale, annotations: annotations) {
-            cachedPatch(for: $0)
+            $0.kind == .magnifier ? cachedMagnifierPatch(for: $0) : cachedPatch(for: $0)
         }
     }
 }

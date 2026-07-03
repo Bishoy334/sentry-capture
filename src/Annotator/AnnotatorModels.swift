@@ -5,13 +5,14 @@ import CoreImage.CIFilterBuiltins
 // MARK: - Tools
 
 enum AnnotatorTool: CaseIterable {
-    case select, crop, lift, arrow, line, rect, filledRect, ellipse, draw, highlighter, text, counter, redact, spotlight
+    case select, crop, lift, arrow, line, rect, filledRect, ellipse, draw, highlighter, text, counter, redact, spotlight, magnifier
 
     var key: String {
         switch self {
         case .select: return "v"
         case .crop: return "k"
         case .lift: return "w"
+        case .magnifier: return "g"
         case .arrow: return "a"
         case .line: return "l"
         case .rect: return "r"
@@ -31,6 +32,7 @@ enum AnnotatorTool: CaseIterable {
         case .select: return "cursorarrow"
         case .crop: return "crop"
         case .lift: return "wand.and.stars"
+        case .magnifier: return "plus.magnifyingglass"
         case .arrow: return "arrow.up.right"
         case .line: return "line.diagonal"
         case .rect: return "rectangle"
@@ -50,6 +52,7 @@ enum AnnotatorTool: CaseIterable {
         case .select: return "Select"
         case .crop: return "Crop"
         case .lift: return "Lift Subject"
+        case .magnifier: return "Magnify"
         case .arrow: return "Arrow"
         case .line: return "Line"
         case .rect: return "Rectangle"
@@ -143,7 +146,7 @@ enum AnnotatorBaseTransform {
 }
 
 enum AnnotatorKind: String, Equatable, Codable {
-    case arrow, line, rect, filledRect, ellipse, freehand, highlighter, text, counter, redact, spotlight, image, sticker
+    case arrow, line, rect, filledRect, ellipse, freehand, highlighter, text, counter, redact, spotlight, image, sticker, magnifier
 }
 
 /// Dropped-in images ride annotations as a reference type so the flat value
@@ -428,7 +431,7 @@ enum AnnotatorHit {
         case .highlighter:
             guard let path = AnnotatorPaths.outline(a) else { return false }
             return fatContains(path, width: AnnotatorRender.highlighterWidth, point: p)
-        case .filledRect, .redact, .spotlight, .image, .sticker:
+        case .filledRect, .redact, .spotlight, .image, .sticker, .magnifier:
             return a.rect.insetBy(dx: -4, dy: -4).contains(p)
         case .text:
             return a.rect.insetBy(dx: -6, dy: -6).contains(p)
@@ -457,6 +460,10 @@ enum AnnotatorHit {
             return [(.lineStart, a.start), (.lineEnd, a.end)]
         case .rect, .filledRect, .ellipse, .redact, .text, .spotlight, .image, .sticker:
             return rectHandles(a.rect)
+        case .magnifier:
+            // Corner handles size the loupe; the extra handle is the source
+            // anchor (what gets magnified).
+            return rectHandles(a.rect) + [(.lineStart, a.start)]
         case .freehand, .highlighter, .counter:
             return []   // move-only
         }
@@ -657,6 +664,33 @@ enum AnnotatorRender {
             if let ref = a.imageRef {
                 blitFlipped(ref.image, in: a.rect, ctx: ctx, canvasHeight: canvasHeight)
             }
+        case .magnifier:
+            // Zoomed patch clipped to the loupe circle + connector to source.
+            if let patch = redactPatch {
+                ctx.saveGState()
+                ctx.addEllipse(in: a.rect)
+                ctx.clip()
+                blitFlipped(patch.image, in: patch.rect, ctx: ctx, canvasHeight: canvasHeight)
+                ctx.restoreGState()
+            }
+            let centre = CGPoint(x: a.rect.midX, y: a.rect.midY)
+            let dx = centre.x - a.start.x
+            let dy = centre.y - a.start.y
+            let len = hypot(dx, dy)
+            ctx.setStrokeColor(a.colour.cgColor)
+            ctx.setLineWidth(max(a.lineWidth * 0.6, 1.5))
+            if len > a.rect.width / 2 + 4 {
+                // Stop the connector at the ring, not its centre.
+                let f = (len - a.rect.width / 2) / len
+                ctx.move(to: a.start)
+                ctx.addLine(to: CGPoint(x: a.start.x + dx * f, y: a.start.y + dy * f))
+                ctx.strokePath()
+                ctx.setFillColor(a.colour.cgColor)
+                ctx.fillEllipse(in: CGRect(
+                    x: a.start.x - 2.5, y: a.start.y - 2.5, width: 5, height: 5))
+            }
+            ctx.setLineWidth(a.lineWidth)
+            ctx.strokeEllipse(in: a.rect)
         case .sticker:
             if let emoji = a.text?.string, !emoji.isEmpty {
                 // Sized by the rect, so the resize handles scale the emoji.
@@ -831,7 +865,8 @@ enum AnnotatorRender {
             if a.tiled {
                 drawTiled(a, in: ctx, canvasHeight: imageSize.height, over: canvas)
             } else {
-                draw(a, in: ctx, canvasHeight: imageSize.height, redactPatch: nil)
+                draw(a, in: ctx, canvasHeight: imageSize.height,
+                     redactPatch: a.kind == .magnifier ? patch(a) : nil)
             }
         }
         NSGraphicsContext.restoreGraphicsState()
@@ -966,6 +1001,26 @@ final class AnnotatorRedactRenderer {
             height: px.height / scale
         )
         return (pointRect, cg)
+    }
+
+    /// Loupe patch: the base region around `source` (rect.size/zoom points)
+    /// scaled up to fill the loupe rect. Clamped extent covers loupes whose
+    /// source hangs past the image edge.
+    func magnifierPatch(
+        rect: CGRect, source: CGPoint, zoom: CGFloat
+    ) -> (rect: CGRect, image: CGImage)? {
+        guard rect.width >= 2, rect.height >= 2, zoom >= 1 else { return nil }
+        let px = CGRect(
+            x: (source.x - rect.width / zoom / 2) * scale,
+            y: pixelHeight - (source.y + rect.height / zoom / 2) * scale,
+            width: rect.width / zoom * scale,
+            height: rect.height / zoom * scale)
+        let scaled = baseCI.clampedToExtent()
+            .cropped(to: px)
+            .transformed(by: CGAffineTransform(scaleX: zoom, y: zoom))
+        guard let cg = ImagePipeline.ciContext.createCGImage(scaled, from: scaled.extent)
+        else { return nil }
+        return (rect, cg)
     }
 
     /// Monochrome random noise composited over the patch — irreversibility

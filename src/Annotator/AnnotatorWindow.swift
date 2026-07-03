@@ -115,7 +115,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     private static let toolbarGroups: [[AnnotatorTool]] = [
         [.crop, .lift],
         [.arrow, .line, .rect, .filledRect, .ellipse],
-        [.highlighter, .redact, .spotlight, .counter],
+        [.highlighter, .redact, .spotlight, .magnifier, .counter],
         [.draw, .text],
         [.select],
     ]
@@ -1072,6 +1072,14 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             control.selectedSegment = active.rawValue
             optionsStack.addArrangedSubview(control)
         }
+        if kind == .magnifier {
+            let control = NSSegmentedControl(
+                labels: ["2×", "3×", "4×"],
+                trackingMode: .selectOne, target: self, action: #selector(magnifierZoomChanged(_:)))
+            control.controlSize = .small
+            control.selectedSegment = min(max((canvas.selectedAnnotation?.number ?? 2) - 2, 0), 2)
+            optionsStack.addArrangedSubview(control)
+        }
         // Text objects double as watermarks — opacity/tile after the styling.
         if let a = canvas.selectedAnnotation, a.kind == .text {
             addWatermarkControls(for: a)
@@ -1154,6 +1162,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         case .counter: return .counter
         case .redact: return .redact
         case .spotlight: return .spotlight
+        case .magnifier: return .magnifier
         }
     }
 
@@ -1314,6 +1323,11 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         if !canvas.isEditingText {
             window.makeFirstResponder(canvas)
         }
+    }
+
+    @objc private func magnifierZoomChanged(_ sender: NSSegmentedControl) {
+        canvas.applyMagnifierZoom(sender.selectedSegment + 2)
+        window.makeFirstResponder(canvas)
     }
 
     @objc private func redactStyleChanged(_ sender: NSSegmentedControl) {
