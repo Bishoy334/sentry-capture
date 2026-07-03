@@ -408,6 +408,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         menu.addItem(item("Open Captures Folder", #selector(openCapturesFolder), key: ""))
         menu.addItem(item("Clean Up Clipboard Image", #selector(cleanClipboard), key: ""))
+        menu.addItem(item("Batch Convert Images…", #selector(batchConvert), key: ""))
         menu.addItem(.separator())
         menu.addItem(item("Settings…", #selector(showPreferences), key: ","))
         menu.addItem(item("Quit Sentry Capture", #selector(quit), key: "q"))
@@ -475,6 +476,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func cleanClipboard() {
         ImageExporter.cleanUpClipboard()
+    }
+
+    @objc private func batchConvert() {
+        BatchConvertController.shared.show()
     }
 
     @objc private func showPreferences() {
