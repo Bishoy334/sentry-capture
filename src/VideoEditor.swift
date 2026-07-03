@@ -19,6 +19,13 @@ final class VideoEditorController: NSObject, NSWindowDelegate {
         super.init()
     }
 
+    /// Where Save lands: a Sentry record's media, or an external file
+    /// opened via Finder (same fork as the annotator's sourceFileURL).
+    enum Target {
+        case record(id: String)
+        case file(URL)
+    }
+
     func open(recordID: String) {
         guard let manifest = SentryStore.shared.loadManifest(for: recordID),
               manifest.media.type == "video/mp4" else {
@@ -27,22 +34,32 @@ final class VideoEditorController: NSObject, NSWindowDelegate {
         }
         let mediaURL = SentryStore.shared.recordDirectory(for: recordID)
             .appendingPathComponent(manifest.media.path)
+        present(target: .record(id: recordID), mediaURL: mediaURL, title: "Edit Recording")
+    }
+
+    /// Finder "Open With" for movies. MP4 saves in place; other containers
+    /// save an .mp4 beside the original (the export pipeline is MP4-only).
+    func open(fileURL: URL) {
+        present(target: .file(fileURL), mediaURL: fileURL, title: fileURL.lastPathComponent)
+    }
+
+    private func present(target: Target, mediaURL: URL, title: String) {
         guard FileManager.default.fileExists(atPath: mediaURL.path) else {
-            Toast.show("Recording file is missing", symbol: "questionmark.folder")
+            Toast.show("Video file is missing", symbol: "questionmark.folder")
             return
         }
 
         // One editor at a time — a second open replaces the first.
         window?.close()
 
-        let editor = VideoEditorView(recordID: recordID, mediaURL: mediaURL)
+        let editor = VideoEditorView(target: target, mediaURL: mediaURL)
         editor.onSaved = { [weak self] in self?.window?.close() }
         let w = NSWindow(
             contentRect: .zero,
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false)
-        w.title = "Edit Recording"
+        w.title = title
         w.contentView = editor
         w.isReleasedWhenClosed = false
         w.setContentSize(NSSize(width: 960, height: 660))
@@ -78,7 +95,7 @@ final class VideoEditorController: NSObject, NSWindowDelegate {
 private final class VideoEditorView: NSView {
     var onSaved: (() -> Void)?
 
-    private let recordID: String
+    private let target: VideoEditorController.Target
     private let mediaURL: URL
     private let asset: AVURLAsset
     private let player: AVPlayer
@@ -89,6 +106,7 @@ private final class VideoEditorView: NSView {
     private var speedPopup: NSPopUpButton!
     private var sizePopup: NSPopUpButton!
     private var volumeSlider: NSSlider!
+    private var frameButton: NSButton!
     private var gifButton: NSButton!
     private var copyButton: NSButton!
     private var saveButton: NSButton!
@@ -110,8 +128,8 @@ private final class VideoEditorView: NSView {
         ("0.5×", 0.5), ("1×", 1), ("1.5×", 1.5), ("2×", 2),
     ]
 
-    init(recordID: String, mediaURL: URL) {
-        self.recordID = recordID
+    init(target: VideoEditorController.Target, mediaURL: URL) {
+        self.target = target
         self.mediaURL = mediaURL
         asset = AVURLAsset(url: mediaURL)
         player = AVPlayer(playerItem: AVPlayerItem(asset: asset))
@@ -178,6 +196,13 @@ private final class VideoEditorView: NSView {
         volumeSlider.translatesAutoresizingMaskIntoConstraints = false
         volumeSlider.widthAnchor.constraint(equalToConstant: 70).isActive = true
 
+        frameButton = NSButton(
+            image: NSImage(
+                systemSymbolName: "camera", accessibilityDescription: "Grab frame") ?? NSImage(),
+            target: self, action: #selector(frameGrabTapped))
+        frameButton.bezelStyle = .rounded
+        frameButton.toolTip = "Open the current frame in the image editor"
+
         gifButton = NSButton(title: "GIF…", target: self, action: #selector(gifTapped))
         gifButton.bezelStyle = .rounded
         gifButton.toolTip = "Export the trimmed clip as a GIF"
@@ -201,7 +226,7 @@ private final class VideoEditorView: NSView {
         spacer.setContentHuggingPriority(.init(1), for: .horizontal)
         let bar = NSStackView(views: [
             infoLabel, spacer, speedPopup, sizePopup, speaker, volumeSlider,
-            spinner, gifButton, copyButton, saveButton,
+            spinner, frameButton, gifButton, copyButton, saveButton,
         ])
         bar.orientation = .horizontal
         bar.alignment = .centerY
@@ -445,13 +470,52 @@ private final class VideoEditorView: NSView {
         runExport { [weak self] in
             guard let self else { return }
             let tempURL = try await self.export(preset: preset)
-            if SentryStore.shared.updateVideoMedia(
-                recordID: self.recordID, tempURL: tempURL, durationSeconds: duration) != nil {
-                Toast.show("Recording saved", symbol: "film")
+            switch self.target {
+            case .record(let id):
+                if SentryStore.shared.updateVideoMedia(
+                    recordID: id, tempURL: tempURL, durationSeconds: duration) != nil {
+                    Toast.show("Recording saved", symbol: "film")
+                    self.onSaved?()
+                } else {
+                    try? FileManager.default.removeItem(at: tempURL)
+                    Toast.show("Could not save recording", symbol: "exclamationmark.triangle")
+                }
+            case .file(let url):
+                // In place for mp4; other containers get an .mp4 sibling.
+                let dest = url.pathExtension.lowercased() == "mp4"
+                    ? url
+                    : url.deletingPathExtension().appendingPathExtension("mp4")
+                if FileManager.default.fileExists(atPath: dest.path) {
+                    _ = try FileManager.default.replaceItemAt(dest, withItemAt: tempURL)
+                } else {
+                    try FileManager.default.moveItem(at: tempURL, to: dest)
+                }
+                Toast.show(
+                    dest == url ? "Saved" : "Saved as \(dest.lastPathComponent)",
+                    symbol: "square.and.arrow.down")
                 self.onSaved?()
-            } else {
-                try? FileManager.default.removeItem(at: tempURL)
-                Toast.show("Could not save recording", symbol: "exclamationmark.triangle")
+            }
+        }
+    }
+
+    /// Phase F frame grab: the paused frame opens in the annotator as a
+    /// still (unsaved — its Save creates a record of its own). Exact-frame
+    /// needs both tolerances zero or the generator snaps to a keyframe.
+    @objc private func frameGrabTapped() {
+        player.pause()
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.requestedTimeToleranceBefore = .zero
+        generator.requestedTimeToleranceAfter = .zero
+        generator.generateCGImageAsynchronously(for: player.currentTime()) { cg, _, error in
+            Task { @MainActor in
+                guard let cg else {
+                    NSLog("frame grab failed: \(String(describing: error))")
+                    Toast.show("Could not grab frame", symbol: "camera")
+                    return
+                }
+                AnnotatorController.shared.open(StillCapture(
+                    image: cg, scale: 1, source: .area, screenRect: nil))
             }
         }
     }

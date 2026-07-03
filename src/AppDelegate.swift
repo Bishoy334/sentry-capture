@@ -1,5 +1,6 @@
 import AppKit
 import ScreenCaptureKit
+import UniformTypeIdentifiers
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -10,7 +11,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls {
             if url.isFileURL {
-                AnnotatorController.shared.openFile(at: url)
+                let type = UTType(filenameExtension: url.pathExtension)
+                if type?.conforms(to: .movie) == true {
+                    VideoEditorController.shared.open(fileURL: url)
+                } else {
+                    AnnotatorController.shared.openFile(at: url)
+                }
             } else {
                 SentryRegistry.handle(url)
             }
