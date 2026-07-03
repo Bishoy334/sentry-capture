@@ -224,6 +224,13 @@ final class ExportSheetController: NSObject, NSTextFieldDelegate {
         previewView.wantsLayer = true
         previewView.layer?.backgroundColor = NSColor.underPageBackgroundColor.cgColor
         previewView.layer?.cornerRadius = 6
+        // The image view's intrinsic size is the image's POINT size — a 3x
+        // export would autolayout the whole sheet to thousands of points
+        // tall. Pin the frame; the image scales into it.
+        previewView.setContentCompressionResistancePriority(.init(1), for: .horizontal)
+        previewView.setContentCompressionResistancePriority(.init(1), for: .vertical)
+        previewView.setContentHuggingPriority(.init(1), for: .horizontal)
+        previewView.setContentHuggingPriority(.init(1), for: .vertical)
         sizeLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         sizeLabel.textColor = .secondaryLabelColor
         sizeLabel.alignment = .center
@@ -324,6 +331,7 @@ final class ExportSheetController: NSObject, NSTextFieldDelegate {
             previewView.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
             previewView.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
             previewView.widthAnchor.constraint(equalToConstant: 300),
+            previewView.heightAnchor.constraint(equalToConstant: 340),
             previewView.bottomAnchor.constraint(equalTo: sizeLabel.topAnchor, constant: -8),
             sizeLabel.leadingAnchor.constraint(equalTo: previewView.leadingAnchor),
             sizeLabel.trailingAnchor.constraint(equalTo: previewView.trailingAnchor),
