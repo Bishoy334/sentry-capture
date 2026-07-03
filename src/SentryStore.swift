@@ -132,10 +132,21 @@ final class SentryStore {
     /// modifiedAt. The annotator's Save lands here so downstream consumers
     /// see one record whose content evolved, not a fork.
     func updateStillMedia(
-        recordID: String, still: StillCapture, data: Data, annotationCount: Int?
+        recordID: String, still: StillCapture, data: Data, annotationCount: Int?,
+        mimeType: String? = nil
     ) -> URL? {
         let dir = root.appendingPathComponent(recordID, isDirectory: true)
         guard var manifest = loadManifest(in: dir) else { return nil }
+        // Format change (a JPEG record gaining transparency re-exports as
+        // PNG) — move the media path so extension and mime stay in agreement.
+        if let mimeType, mimeType != manifest.media.type {
+            let ext = mimeType == "image/png" ? "png" : "jpg"
+            try? FileManager.default.removeItem(
+                at: dir.appendingPathComponent(manifest.media.path))
+            manifest.media.path =
+                (manifest.media.path as NSString).deletingPathExtension + "." + ext
+            manifest.media.type = mimeType
+        }
         let mediaURL = dir.appendingPathComponent(manifest.media.path)
         do {
             try data.write(to: mediaURL)

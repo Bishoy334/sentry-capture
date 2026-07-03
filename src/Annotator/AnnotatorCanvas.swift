@@ -1,5 +1,6 @@
 import AppKit
 import Carbon.HIToolbox
+import CoreImage
 
 /// The editor canvas: a single flipped NSView whose coordinate space IS the
 /// image's point space (research B1). Zoom/pan live entirely in the enclosing
@@ -8,6 +9,16 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
     private struct State {
         var base: CGImage
         var annotations: [AnnotatorAnnotation]
+        var baseTransparent: Bool
+    }
+
+    /// Everything needed to re-cut a lifted subject at a new feather without
+    /// re-running the model. Session-only — the baked cut-out is what persists.
+    private struct LiftSource {
+        let source: CGImage
+        let mask: CIImage
+        let cropPx: CGRect
+        var feather: CGFloat = 0
     }
 
     private struct PatchEntry {
@@ -61,6 +72,21 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
 
     private let redactRenderer: AnnotatorRedactRenderer
     private var patchCache: [UUID: PatchEntry] = [:]
+
+    /// The base image has see-through pixels (remove-bg, window shadow) —
+    /// drives the transparency checker and forces PNG on export.
+    private(set) var baseTransparent = false
+    /// The backdrop is painting a fill behind us — let it show through
+    /// transparent pixels instead of the checker (live composition preview).
+    var backdropFillVisible = false {
+        didSet { if backdropFillVisible != oldValue { needsDisplay = true } }
+    }
+
+    private let liftEngine = SubjectLiftEngine()
+    private var liftSources: [UUID: LiftSource] = [:]
+    private var featherPreState: State?
+    private var hoverInstances = IndexSet()
+    private var hoverOverlay: CGImage?
 
     private(set) var cropActive = false
     private var cropRect: CGRect = .zero
@@ -157,11 +183,28 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         imageScale = still.scale
         redactRenderer = AnnotatorRedactRenderer(base: still.image, scale: still.scale)
         super.init(frame: NSRect(origin: .zero, size: .zero))
+        baseTransparent = still.hasAlpha || imageLooksTransparent(still.image)
         canvasRect = CGRect(origin: .zero, size: pointSize)
         setFrameSize(pointSize)
         wantsLayer = true
         layerContentsRedrawPolicy = .onSetNeedsDisplay
         registerForDraggedTypes([.fileURL, .png, .tiff])
+        liftEngine.onSettled = { [weak self] in
+            guard let self, tool == .lift else { return }
+            if liftEngine.phase == .failed {
+                Toast.show("Could not analyse image", symbol: "exclamationmark.triangle")
+            }
+            refreshHover(at: nil)
+        }
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas { removeTrackingArea(area) }
+        addTrackingArea(NSTrackingArea(
+            rect: .zero,
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            owner: self))
     }
 
     @available(*, unavailable)
@@ -184,8 +227,11 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
     override func draw(_ dirtyRect: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
         let h = pointSize.height
-        // Expansion margin reads as transparency (it exports that way).
-        if canvasRect != CGRect(origin: .zero, size: pointSize) {
+        // Expansion margin and see-through base pixels read as transparency
+        // (they export that way) — unless the backdrop is painting a fill,
+        // which should show through instead (live composition preview).
+        if !backdropFillVisible,
+           canvasRect != CGRect(origin: .zero, size: pointSize) || baseTransparent {
             drawTransparencyChecker(in: ctx, rect: bounds)
         }
         // Everything below draws in image-relative model coordinates.
@@ -220,6 +266,12 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
             if let id = selectedID, let sel = annotation(id) {
                 drawChrome(sel, in: ctx)
             }
+        }
+        if tool == .lift, let hoverOverlay {
+            // Detected-subject preview: analysis-resolution amber tint
+            // stretched over the image; soft edges are fine for a preview.
+            AnnotatorRender.blitFlipped(
+                hoverOverlay, in: CGRect(origin: .zero, size: pointSize), ctx: ctx, canvasHeight: h)
         }
         if case .marquee = drag, marqueeRect.width + marqueeRect.height > 2 {
             ctx.saveGState()
@@ -492,6 +544,8 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
             selectMouseDown(at: p, clickCount: event.clickCount)
         case .crop:
             break   // entering the tool activates crop mode; handled above
+        case .lift:
+            liftAtPoint(p)
         case .text:
             beginTextEditing(at: p, existing: nil)
         case .counter:
@@ -730,6 +784,136 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
             setNeedsDisplay(AnnotatorGeo.displayBounds(of: a))
         } else {
             drag = .none
+        }
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        guard tool == .lift else { return }
+        refreshHover(at: convert(event.locationInWindow, from: nil))
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        if tool == .lift { setHover(IndexSet()) }
+    }
+
+    // MARK: Subject lift
+
+    /// nil = look up the current mouse position (analysis settled under a
+    /// stationary cursor).
+    private func refreshHover(at viewPoint: CGPoint?) {
+        guard liftEngine.phase == .ready else {
+            setHover(IndexSet())
+            return
+        }
+        let vp = viewPoint ?? window.map {
+            convert($0.mouseLocationOutsideOfEventStream, from: nil)
+        } ?? CGPoint(x: -1, y: -1)
+        let p = CGPoint(x: vp.x - imageOriginInView.x, y: vp.y - imageOriginInView.y)
+        guard visibleRect.contains(vp),
+              CGRect(origin: .zero, size: pointSize).contains(p) else {
+            setHover(IndexSet())
+            return
+        }
+        setHover(liftEngine.instances(atImagePoint: p, imageSize: pointSize))
+    }
+
+    private func setHover(_ instances: IndexSet) {
+        guard instances != hoverInstances else { return }
+        hoverInstances = instances
+        hoverOverlay = instances.isEmpty ? nil : liftEngine.hoverOverlay(for: instances)
+        needsDisplay = true
+    }
+
+    private func liftAtPoint(_ p: CGPoint) {
+        // Lift registers its own undo — a stale preGesture would double up
+        // at mouseUp.
+        let pre = preGesture ?? snapshot()
+        preGesture = nil
+        switch liftEngine.phase {
+        case .idle, .analysing:
+            liftEngine.prepare(base: baseImage)
+            Toast.show("Finding subjects…", symbol: "wand.and.stars")
+            return
+        case .failed:
+            Toast.show("Could not analyse image", symbol: "exclamationmark.triangle")
+            return
+        case .ready:
+            break
+        }
+        let instances = liftEngine.instances(atImagePoint: p, imageSize: pointSize)
+        guard !instances.isEmpty else {
+            Toast.show("No subject there", symbol: "wand.and.stars")
+            return
+        }
+        guard let lift = liftEngine.lift(
+            instances: instances, base: baseImage, scale: imageScale) else {
+            Toast.show("Could not lift subject", symbol: "exclamationmark.triangle")
+            return
+        }
+        var a = AnnotatorAnnotation(kind: .image)
+        a.imageRef = AnnotatorImageRef(image: lift.image)
+        a.rect = lift.rectPoints
+        annotations.append(a)
+        liftSources[a.id] = LiftSource(source: lift.source, mask: lift.mask, cropPx: lift.cropPx)
+        setHover(IndexSet())
+        // Hand straight to select so the lifted object can be dragged/refined.
+        tool = .select
+        setSelected(a.id)
+        setNeedsDisplay(AnnotatorGeo.displayBounds(of: a))
+        registerUndo(pre, name: "Lift Subject")
+        onStateChange?()
+    }
+
+    /// Whole-image subject matte: base swapped for its transparent-background
+    /// version, undoable like a crop. Analysis runs async; a base swap
+    /// mid-flight (crop/undo) drops the result.
+    func removeBackground() {
+        let base = baseImage
+        Toast.show("Removing background…", symbol: "person.and.background.dotted")
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            guard let result = await liftEngine.removeBackgroundImage(from: base) else {
+                Toast.show("No subject found", symbol: "exclamationmark.triangle")
+                return
+            }
+            guard base === baseImage else { return }
+            let pre = snapshot()
+            baseImage = result
+            baseTransparent = true
+            redactRenderer.setBase(result)
+            patchCache.removeAll()
+            liftEngine.invalidate()
+            registerUndo(pre, name: "Remove Background")
+            needsDisplay = true
+            onImageChanged?()
+            onStateChange?()
+        }
+    }
+
+    // MARK: Lift feather (options bar)
+
+    /// nil = not a lifted object (plain dropped-in image) — no feather control.
+    func liftFeather(for id: UUID) -> CGFloat? {
+        liftSources[id]?.feather
+    }
+
+    /// Re-cuts the subject through a blurred mask. Continuous slider drags
+    /// preview every tick but register ONE undo, at commit (mouse-up).
+    func setLiftFeather(_ sigma: CGFloat, for id: UUID, commit: Bool) {
+        guard var source = liftSources[id], let i = index(of: id) else { return }
+        if featherPreState == nil { featherPreState = snapshot() }
+        if source.feather != sigma,
+           let cut = SubjectLiftEngine.cutout(
+               source: source.source, mask: source.mask,
+               cropPx: source.cropPx, feather: sigma) {
+            source.feather = sigma
+            liftSources[id] = source
+            annotations[i].imageRef = AnnotatorImageRef(image: cut)
+            setNeedsDisplay(AnnotatorGeo.displayBounds(of: annotations[i]))
+        }
+        if commit {
+            if let pre = featherPreState { registerUndoIfChanged(pre, name: "Feather") }
+            featherPreState = nil
         }
     }
 
@@ -1110,6 +1294,11 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
             cropActive = false
             needsDisplay = true
         }
+        if tool == .lift {
+            liftEngine.prepare(base: baseImage)   // warm up while the user aims
+        } else if old == .lift {
+            setHover(IndexSet())
+        }
         if tool == .crop {
             cropActive = true
             cropRect = CGRect(origin: .zero, size: pointSize)
@@ -1147,8 +1336,10 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         }
         renumberCounters()
         baseImage = cropped
+        baseTransparent = imageLooksTransparent(cropped)
         redactRenderer.setBase(cropped)
         patchCache.removeAll()
+        liftEngine.invalidate()
         canvasRect = AnnotatorGeo.canvasBounds(imageSize: pointSize, annotations: annotations)
         setFrameSize(canvasRect.size)
         onCanvasResized?()
@@ -1306,7 +1497,7 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
     // MARK: Undo
 
     private func snapshot() -> State {
-        State(base: baseImage, annotations: annotations)
+        State(base: baseImage, annotations: annotations, baseTransparent: baseTransparent)
     }
 
     private func finishGesture(name: String) {
@@ -1337,11 +1528,14 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         discardTextEditing()
         let baseChanged = state.base !== baseImage
         baseImage = state.base
+        baseTransparent = state.baseTransparent
         annotations = state.annotations
         selectedID = nil
         selectedIDs = []
         patchCache.removeAll()
         if baseChanged {
+            liftEngine.invalidate()
+            setHover(IndexSet())
             redactRenderer.setBase(state.base)
             // A live crop rect sized for the old base would dangle off-canvas.
             if cropActive { cropRect = CGRect(origin: .zero, size: pointSize) }
@@ -1355,6 +1549,12 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
     }
 
     // MARK: Export
+
+    /// The flattened export will carry real transparency — margins from
+    /// canvas expansion, or see-through base pixels (remove-bg, shadows).
+    var hasTransparentContent: Bool {
+        baseTransparent || canvasRect != CGRect(origin: .zero, size: pointSize)
+    }
 
     /// Flatten the current state at native pixel scale — selection chrome and
     /// any in-flight text editor are excluded by construction.

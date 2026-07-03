@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 
 // MARK: - Controller (public contract)
 
@@ -101,7 +102,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     /// Toolbar layout: capture-level, shapes, emphasis, ink, then select.
     /// nil entries render as group separators.
     private static let toolbarGroups: [[AnnotatorTool]] = [
-        [.crop],
+        [.crop, .lift],
         [.arrow, .line, .rect, .filledRect, .ellipse],
         [.highlighter, .redact, .spotlight, .counter],
         [.draw, .text],
@@ -285,12 +286,19 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             }
         }
 
+        // Remove Background is an action, not a tool — it fires once and the
+        // undo stack holds the result. Lives beside its sibling, lift.
+        let removeBG = toolbarIconButton(
+            symbol: "person.and.background.dotted", tooltip: "Remove Background",
+            action: #selector(removeBackgroundTapped))
+        stack.insertArrangedSubview(removeBG, at: 2)
+
         // Background mode is chrome-level, not a canvas tool — its button
         // lives beside crop but toggles the options bar instead of the tool.
         let background = toolbarIconButton(
             symbol: "photo.on.rectangle", tooltip: "Background (B)",
             action: #selector(backgroundTapped))
-        stack.insertArrangedSubview(background, at: 1)
+        stack.insertArrangedSubview(background, at: 3)
         backgroundButton = background
 
         // Sticker stamps: a one-tap emoji menu, placed as movable annotations.
@@ -491,6 +499,9 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         let pt = canvas.canvasPointSize
         let pad = backgroundStyle.isVisible ? backgroundStyle.padding : 0
         backdrop.style = backgroundStyle
+        // A visible fill previews through transparent pixels (the canvas
+        // suppresses its checker so the composition shows live).
+        canvas.backdropFillVisible = backgroundStyle.isVisible
         backdrop.setFrameSize(NSSize(width: pt.width + pad * 2, height: pt.height + pad * 2))
         canvas.setFrameOrigin(NSPoint(x: pad, y: pad))
         canvas.setFrameSize(pt)
@@ -649,8 +660,24 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             return
         }
 
+        // The lift tool has no styling — the bar coaches the gesture instead.
+        if canvas.tool == .lift, canvas.selectedAnnotation == nil {
+            let hint = NSTextField(labelWithString: "Click a subject to lift it out")
+            hint.font = .systemFont(ofSize: 11)
+            hint.textColor = .secondaryLabelColor
+            optionsStack.addArrangedSubview(hint)
+            return
+        }
+
         // Options follow the selection when there is one, else the armed tool.
         let kind = canvas.selectedAnnotation?.kind ?? impliedKind(for: canvas.tool)
+
+        // Image objects (lifted subjects, dropped-in images) get object
+        // actions, not styling.
+        if kind == .image, let a = canvas.selectedAnnotation, a.kind == .image {
+            buildImageObjectOptions(for: a)
+            return
+        }
         var showColour = false
         var showStroke = false
         var showTextSize = false
@@ -742,9 +769,40 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         }
     }
 
+    /// Feather (lifted subjects only), Copy, Detach and a drag-out chip.
+    private func buildImageObjectOptions(for a: AnnotatorAnnotation) {
+        if let feather = canvas.liftFeather(for: a.id) {
+            let label = NSTextField(labelWithString: "Feather")
+            label.font = .systemFont(ofSize: 11)
+            label.textColor = .secondaryLabelColor
+            let slider = NSSlider(
+                value: Double(feather), minValue: 0, maxValue: 12,
+                target: self, action: #selector(liftFeatherChanged(_:)))
+            slider.controlSize = .small
+            slider.toolTip = "Soften the cut-out edge"
+            slider.translatesAutoresizingMaskIntoConstraints = false
+            slider.widthAnchor.constraint(equalToConstant: 110).isActive = true
+            optionsStack.addArrangedSubview(label)
+            optionsStack.addArrangedSubview(slider)
+        }
+        func action(_ title: String, _ selector: Selector) -> NSButton {
+            let button = NSButton(title: title, target: self, action: selector)
+            button.controlSize = .small
+            button.bezelStyle = .accessoryBarAction
+            button.font = .systemFont(ofSize: 11)
+            return button
+        }
+        optionsStack.addArrangedSubview(action("Copy PNG", #selector(copyObjectTapped)))
+        optionsStack.addArrangedSubview(action("Detach as Image", #selector(detachObjectTapped)))
+        if let ref = a.imageRef {
+            optionsStack.addArrangedSubview(
+                ObjectDragChip(image: ref.image, scale: canvas.imageScale))
+        }
+    }
+
     private func impliedKind(for tool: AnnotatorTool) -> AnnotatorKind? {
         switch tool {
-        case .select, .crop: return nil
+        case .select, .crop, .lift: return nil
         case .arrow: return .arrow
         case .line: return .line
         case .rect: return .rect
@@ -925,6 +983,34 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         window.makeFirstResponder(canvas)
     }
 
+    @objc private func removeBackgroundTapped() {
+        canvas.removeBackground()
+        window.makeFirstResponder(canvas)
+    }
+
+    @objc private func liftFeatherChanged(_ sender: NSSlider) {
+        guard let id = canvas.selectedAnnotation?.id else { return }
+        // Preview every tick, commit (one undo entry) on mouse-up.
+        let commit = NSApp.currentEvent.map { $0.type == .leftMouseUp } ?? true
+        canvas.setLiftFeather(CGFloat(sender.doubleValue), for: id, commit: commit)
+    }
+
+    @objc private func copyObjectTapped() {
+        guard let a = canvas.selectedAnnotation, let ref = a.imageRef else { return }
+        OutputRouter.shared.copyToClipboard(StillCapture(
+            image: ref.image, scale: canvas.imageScale, source: source,
+            screenRect: nil, hasAlpha: true))
+        Toast.show("Copied", symbol: "doc.on.clipboard")
+    }
+
+    /// The splice flow: a lifted subject becomes its own editable capture.
+    @objc private func detachObjectTapped() {
+        guard let a = canvas.selectedAnnotation, let ref = a.imageRef else { return }
+        AnnotatorController.shared.open(StillCapture(
+            image: ref.image, scale: canvas.imageScale, source: source,
+            screenRect: nil, hasAlpha: true))
+    }
+
     @objc private func backgroundTapped() {
         backgroundBarActive.toggle()
         if backgroundBarActive {
@@ -984,9 +1070,12 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         }
         let final = AnnotatorRender.applyBackground(
             backgroundStyle, to: flattened, scale: canvas.imageScale) ?? flattened
+        // Real transparency (remove-bg, spilled margins) must survive the
+        // format choice downstream — a visible background fill re-opaques it.
         return StillCapture(
             image: final, scale: canvas.imageScale, source: source,
-            screenRect: nil, origin: origin, recordID: recordID)
+            screenRect: nil, origin: origin, recordID: recordID,
+            hasAlpha: !backgroundStyle.isVisible && canvas.hasTransparentContent)
     }
 
     @objc private func copyTapped() {
@@ -1141,6 +1230,73 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
 
     private func refreshZoomLabel() {
         zoomLabel.stringValue = "\(Int((scrollView.magnification * 100).rounded()))%"
+    }
+}
+
+// MARK: - Object drag-out
+
+/// Draggable proxy of the selected image object — drag it to Finder/Slack to
+/// export the object alone as PNG. Dragging the object on the canvas stays a
+/// move; this chip is the unambiguous file-drag affordance.
+private final class ObjectDragChip: NSView, NSDraggingSource {
+    private let image: CGImage
+    private let scale: CGFloat
+
+    init(image: CGImage, scale: CGFloat) {
+        self.image = image
+        self.scale = scale
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = 4
+        layer?.borderWidth = 1
+        layer?.borderColor = NSColor.separatorColor.cgColor
+        toolTip = "Drag out to save as PNG"
+        translatesAutoresizingMaskIntoConstraints = false
+        widthAnchor.constraint(equalToConstant: 34).isActive = true
+        heightAnchor.constraint(equalToConstant: 22).isActive = true
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        let inset = bounds.insetBy(dx: 3, dy: 3)
+        let w = CGFloat(image.width)
+        let h = CGFloat(image.height)
+        let f = min(inset.width / w, inset.height / h)
+        ctx.draw(image, in: CGRect(
+            x: inset.midX - w * f / 2, y: inset.midY - h * f / 2,
+            width: w * f, height: h * f))
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let png = OutputRouter.encodePNG(image: image, dpiScale: scale) else { return }
+        let anchor = QAOPromiseDelegate(
+            fileName: OutputRouter.shared.nextFileName(ext: "png"),
+            sourceURL: nil, fileData: png)
+        let provider = QAOImagePromiseProvider(
+            fileType: UTType.png.identifier, delegate: anchor)
+        provider.anchorDelegate = anchor
+        provider.pngData = png
+        let item = NSDraggingItem(pasteboardWriter: provider)
+        // Drag image: the object at point size, capped so a big cut-out
+        // doesn't shroud the drop target.
+        var size = NSSize(width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale)
+        if max(size.width, size.height) > 160 {
+            let f = 160 / max(size.width, size.height)
+            size = NSSize(width: size.width * f, height: size.height * f)
+        }
+        item.setDraggingFrame(
+            NSRect(origin: NSPoint(x: bounds.midX - size.width / 2, y: bounds.maxY), size: size),
+            contents: NSImage(cgImage: image, size: size))
+        beginDraggingSession(with: [item], event: event, source: self)
+    }
+
+    nonisolated func draggingSession(
+        _ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext
+    ) -> NSDragOperation {
+        context == .outsideApplication ? .copy : []
     }
 }
 

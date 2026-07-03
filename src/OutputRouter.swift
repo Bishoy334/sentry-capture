@@ -92,10 +92,15 @@ final class OutputRouter {
         _ still: StillCapture, annotationCount: Int? = nil
     ) -> (url: URL, recordID: String)? {
         if let id = still.recordID, let manifest = SentryStore.shared.loadManifest(for: id) {
-            let format: ImageFormat = manifest.media.type == "image/jpeg" ? .jpg : .png
+            // Transparency forces PNG even when the record was JPEG — a
+            // remove-bg or spilled-margin edit would flatten to black otherwise.
+            let format: ImageFormat = still.hasAlpha
+                ? .png
+                : (manifest.media.type == "image/jpeg" ? .jpg : .png)
             guard let data = encode(still, format: format),
                   let url = SentryStore.shared.updateStillMedia(
-                      recordID: id, still: still, data: data, annotationCount: annotationCount)
+                      recordID: id, still: still, data: data,
+                      annotationCount: annotationCount, mimeType: format.mimeType)
             else { return nil }
             return (url, id)
         }

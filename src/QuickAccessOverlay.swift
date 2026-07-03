@@ -782,8 +782,9 @@ private final class SendPayload {
 
 /// NSFilePromiseProvider.delegate is weak, and the card can be dismissed
 /// before the receiver pulls the promise — the provider anchors this so the
-/// write always completes.
-private final class QAOPromiseDelegate: NSObject, NSFilePromiseProviderDelegate {
+/// write always completes. Internal: the annotator's object drag-out reuses
+/// this same plumbing.
+final class QAOPromiseDelegate: NSObject, NSFilePromiseProviderDelegate {
     private let fileName: String
     private let sourceURL: URL?
     private let fileData: Data?
@@ -826,7 +827,7 @@ private final class QAOPromiseDelegate: NSObject, NSFilePromiseProviderDelegate 
 
 /// Serves raw PNG alongside the file promise so image-pasteboard consumers
 /// (web drop targets, Slack) work without waiting on the promise.
-private final class QAOImagePromiseProvider: NSFilePromiseProvider {
+final class QAOImagePromiseProvider: NSFilePromiseProvider {
     var pngData: Data?
     var anchorDelegate: QAOPromiseDelegate?
 
