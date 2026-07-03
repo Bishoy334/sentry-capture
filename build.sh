@@ -32,6 +32,12 @@ mkdir -p "${APP_DIR}/Contents/MacOS" "${APP_DIR}/Contents/Resources"
 cp "${SCRIPT_DIR}/${BIN_NAME}" "${APP_DIR}/Contents/MacOS/${BIN_NAME}"
 cp "${SCRIPT_DIR}/Info.plist" "${APP_DIR}/Contents/Info.plist"
 cp "${SCRIPT_DIR}/assets/AppIcon.icns" "${APP_DIR}/Contents/Resources/AppIcon.icns"
+# Optional ML upscaler (Phase G): produced by scripts/convert_upscaler.py.
+# Absent = the app builds and runs without AI upscale offered.
+if [ -d "${SCRIPT_DIR}/assets/Upscaler.mlpackage" ]; then
+    xcrun coremlcompiler compile "${SCRIPT_DIR}/assets/Upscaler.mlpackage" \
+        "${APP_DIR}/Contents/Resources" > /dev/null
+fi
 rm "${SCRIPT_DIR}/${BIN_NAME}"
 
 # TCC ties the Screen Recording grant to the code signature — ad-hoc signing

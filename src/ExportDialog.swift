@@ -191,8 +191,14 @@ final class ExportSheetController: NSObject, NSTextFieldDelegate {
     private let metadataCheck = NSButton(checkboxWithTitle: "Remove metadata", target: nil, action: nil)
     private let destinationPopup = NSPopUpButton()
 
+    private let aiPopup = NSPopUpButton()
     private var format: ExportFormat = .png
     private var outputPx: CGSize
+    /// 0 = off, else 2/4. The model is 4x-native; 2x renders 4x then
+    /// Lanczos-halves — sharper than Lanczos-doubling the original.
+    private var aiFactor = 0
+    private var aiUpscaled: CGImage?
+    private var aiTask: Task<Void, Never>?
     private var presets = ExportPreset.loadAll()
     /// Latest encode wins; stale results are dropped (same throttle pattern
     /// as the canvas preview).
@@ -309,12 +315,21 @@ final class ExportSheetController: NSObject, NSTextFieldDelegate {
         buttons.orientation = .horizontal
         buttons.spacing = 8
 
+        for title in ["Off", "2×", "4×"] {
+            aiPopup.addItem(withTitle: title)
+        }
+        aiPopup.target = self
+        aiPopup.action = #selector(aiPicked)
+        let aiRow = row("AI Upscale", aiPopup)
+        aiRow.isHidden = !Upscaler.isAvailable   // model not bundled = no row
+
         let qRow = row("Quality", qualityStack)
         qualityRow = qRow
         let controls = NSStackView(views: [
             row("Preset", presetPopup),
             row("Format", formatPopup),
             row("Scale", scaleSeg),
+            aiRow,
             row("Size", sizeRow),
             qRow,
             row("", metadataCheck),
@@ -378,13 +393,40 @@ final class ExportSheetController: NSObject, NSTextFieldDelegate {
     /// The image at the chosen pixel size (Lanczos when it differs), cached
     /// so a quality drag doesn't re-resample.
     private func currentOutputImage() -> CGImage? {
-        if Int(outputPx.width) == source.width, Int(outputPx.height) == source.height {
-            return source
+        let base: CGImage
+        if aiFactor > 0 {
+            guard let up = aiUpscaled else { return nil }   // still inferring
+            base = up
+        } else {
+            base = source
+        }
+        if Int(outputPx.width) == base.width, Int(outputPx.height) == base.height {
+            return base
         }
         if let cached = resizeCache, cached.px == outputPx { return cached.image }
-        guard let resized = ImageExporter.resized(source, to: outputPx) else { return nil }
+        guard let resized = ImageExporter.resized(base, to: outputPx) else { return nil }
         resizeCache = (outputPx, resized)
         return resized
+    }
+
+    /// One 4x inference per sheet, off-main; everything downstream (2x,
+    /// custom sizes) is Lanczos over the result.
+    private func ensureAIUpscaled() {
+        guard aiUpscaled == nil, aiTask == nil else { return }
+        let src = source
+        aiTask = Task.detached(priority: .userInitiated) { [weak self] in
+            let up = Upscaler.upscale4x(src)
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                aiTask = nil
+                guard let up else {
+                    sizeLabel.stringValue = "Upscale failed"
+                    return
+                }
+                aiUpscaled = up
+                refreshOutput()
+            }
+        }
     }
 
     private var outputDPIScale: CGFloat {
@@ -394,6 +436,11 @@ final class ExportSheetController: NSObject, NSTextFieldDelegate {
     /// Live preview + estimated size: encode off-main, latest state wins.
     /// The preview shows the DECODED encode, so JPEG/HEIC artefacts are real.
     private func refreshOutput() {
+        if aiFactor > 0, aiUpscaled == nil {
+            sizeLabel.stringValue = "Upscaling…"
+            ensureAIUpscaled()
+            return
+        }
         encodeGeneration += 1
         let generation = encodeGeneration
         let fmt = format
@@ -421,6 +468,18 @@ final class ExportSheetController: NSObject, NSTextFieldDelegate {
     }
 
     // MARK: Actions
+
+    @objc private func aiPicked() {
+        aiFactor = [0, 2, 4][aiPopup.indexOfSelectedItem]
+        resizeCache = nil
+        outputPx = CGSize(
+            width: source.width * max(aiFactor, 1),
+            height: source.height * max(aiFactor, 1))
+        presetPopup.selectItem(at: 0)
+        syncFields()
+        selectScaleSegmentIfMatching()
+        refreshOutput()
+    }
 
     @objc private func formatPicked() {
         format = ExportFormat.allCases[formatPopup.indexOfSelectedItem]
@@ -526,6 +585,10 @@ final class ExportSheetController: NSObject, NSTextFieldDelegate {
     }
 
     @objc private func exportTapped() {
+        if aiFactor > 0, aiUpscaled == nil {
+            Toast.show("Still upscaling — one moment", symbol: "wand.and.rays")
+            return
+        }
         guard let output = currentOutputImage(),
               let data = ImageExporter.encode(
                   output, format: format, quality: qualitySlider.doubleValue,
