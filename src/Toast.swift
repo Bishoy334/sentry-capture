@@ -19,6 +19,34 @@ enum HUDStyle {
     static let accentSoft = NSColor(
         srgbRed: 0xE8 / 255, green: 0xA9 / 255, blue: 0x6A / 255, alpha: 0.14)
 
+    /// Editor chrome surface (matches sentry-finder's Theme): warm near-black
+    /// tint washed over a behind-window blur; hairlines are white at 6%.
+    static let editorTint = NSColor(
+        srgbRed: 0x0D / 255, green: 0x0D / 255, blue: 0x10 / 255, alpha: 1)
+    static let hairline = NSColor.white.withAlphaComponent(0.06)
+
+    /// The sentry-finder chrome base: behind-window blur + editorTint wash.
+    /// Native controls placed over it (under .darkAqua) pick up the dark
+    /// translucent look without any custom drawing.
+    static func tintedBlurCanvas(tintAlpha: CGFloat = 0.72) -> NSView {
+        let effect = NSVisualEffectView()
+        effect.material = .underWindowBackground
+        effect.blendingMode = .behindWindow
+        effect.state = .active
+        let tint = NSView()
+        tint.wantsLayer = true
+        tint.layer?.backgroundColor = editorTint.withAlphaComponent(tintAlpha).cgColor
+        tint.translatesAutoresizingMaskIntoConstraints = false
+        effect.addSubview(tint)
+        NSLayoutConstraint.activate([
+            tint.leadingAnchor.constraint(equalTo: effect.leadingAnchor),
+            tint.trailingAnchor.constraint(equalTo: effect.trailingAnchor),
+            tint.topAnchor.constraint(equalTo: effect.topAnchor),
+            tint.bottomAnchor.constraint(equalTo: effect.bottomAnchor),
+        ])
+        return effect
+    }
+
     static func card(appearance: NSAppearance.Name? = nil) -> NSVisualEffectView {
         let card = NSVisualEffectView()
         card.material = .hudWindow

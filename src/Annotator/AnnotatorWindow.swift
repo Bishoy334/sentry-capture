@@ -152,6 +152,12 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         window.isReleasedWhenClosed = false
         window.contentMinSize = NSSize(width: 560, height: 420)
         window.tabbingMode = .disallowed
+        // Sentry chrome (matches sentry-finder): committed dark, transparent
+        // titlebar over a tinted behind-window blur — native controls pick up
+        // the dark translucent look from the appearance, not custom drawing.
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.titlebarAppearsTransparent = true
+        window.backgroundColor = HUDStyle.editorTint
         window.contentView = buildContent()
 
         canvas.onStateChange = { [weak self] in self?.refreshChrome() }
@@ -187,6 +193,12 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     // MARK: NSWindowDelegate
 
     func windowWillClose(_ notification: Notification) {
+        // The shared colour panel outlives the editor — don't leave it
+        // pointing at a dead target (no public getter, so clear it blind).
+        if NSColorPanel.sharedColorPanelExists, NSColorPanel.shared.isVisible {
+            NSColorPanel.shared.setTarget(nil)
+            NSColorPanel.shared.close()
+        }
         AppActivation.release()
         onClose?()
     }
@@ -198,7 +210,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     // MARK: Layout
 
     private func buildContent() -> NSView {
-        let content = NSView()
+        let content = HUDStyle.tintedBlurCanvas()
 
         let toolbar = buildToolbar()
         let optionsBar = buildOptionsBar()
@@ -271,7 +283,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     private func hairline() -> NSView {
         let line = NSView()
         line.wantsLayer = true
-        line.layer?.backgroundColor = NSColor.separatorColor.cgColor
+        line.layer?.backgroundColor = HUDStyle.hairline.cgColor
         line.translatesAutoresizingMaskIntoConstraints = false
         return line
     }
@@ -871,16 +883,9 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
                 optionsStack.addArrangedSubview(
                     swatch(entry.colour, name: entry.name, tag: i, selected: entry.colour == activeColour))
             }
-            // Any-colour well after the presets; its popover carries the eyedropper.
-            let well = NSColorWell(style: .minimal)
-            well.color = activeColour
-            well.target = self
-            well.action = #selector(colourWellChanged(_:))
-            well.toolTip = "Custom colour"
-            well.translatesAutoresizingMaskIntoConstraints = false
-            well.widthAnchor.constraint(equalToConstant: 34).isActive = true
-            well.heightAnchor.constraint(equalToConstant: 20).isActive = true
-            optionsStack.addArrangedSubview(well)
+            // Any-colour well after the presets: the classic rainbow circle,
+            // opening the shared colour panel (eyedropper included).
+            optionsStack.addArrangedSubview(rainbowWell())
         }
         if showStroke {
             let control = NSSegmentedControl(
@@ -1071,11 +1076,50 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         }
     }
 
-    @objc private func colourWellChanged(_ sender: NSColorWell) {
+    /// Hue-wheel circle drawn with a conic gradient — the "any colour" affordance.
+    private func rainbowWell() -> NSButton {
+        let button = NSButton()
+        button.title = ""
+        button.isBordered = false
+        button.setButtonType(.momentaryChange)
+        button.toolTip = "Custom colour"
+        button.wantsLayer = true
+        let gradient = CAGradientLayer()
+        gradient.type = .conic
+        gradient.frame = CGRect(x: 0, y: 0, width: 20, height: 20)
+        gradient.startPoint = CGPoint(x: 0.5, y: 0.5)
+        gradient.endPoint = CGPoint(x: 0.5, y: 0)
+        gradient.colors = stride(from: 0.0, through: 1.0, by: 1.0 / 6.0).map {
+            NSColor(hue: $0, saturation: 0.85, brightness: 1, alpha: 1).cgColor
+        }
+        gradient.cornerRadius = 10
+        gradient.masksToBounds = true
+        gradient.borderWidth = 1
+        gradient.borderColor = NSColor.white.withAlphaComponent(0.35).cgColor
+        button.layer?.addSublayer(gradient)
+        button.target = self
+        button.action = #selector(rainbowWellTapped)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.widthAnchor.constraint(equalToConstant: 20).isActive = true
+        button.heightAnchor.constraint(equalToConstant: 20).isActive = true
+        return button
+    }
+
+    @objc private func rainbowWellTapped() {
+        let panel = NSColorPanel.shared
+        panel.showsAlpha = false
+        panel.isContinuous = true
+        panel.color = canvas.selectedAnnotation?.colour ?? canvas.currentColour
+        panel.setTarget(self)
+        panel.setAction(#selector(colourPanelChanged(_:)))
+        panel.makeKeyAndOrderFront(nil)
+    }
+
+    @objc private func colourPanelChanged(_ sender: NSColorPanel) {
         canvas.applyColour(sender.color)
         toolColours[canvas.tool] = sender.color
         // No refreshChrome: the guard above skips rebuilds while the panel is
-        // up, and rebuilding would disconnect the well mid-drag anyway.
+        // up, and rebuilding mid-drag would orphan the panel's target anyway.
     }
 
     @objc private func strokeChanged(_ sender: NSSegmentedControl) {

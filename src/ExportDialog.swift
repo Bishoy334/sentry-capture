@@ -209,6 +209,7 @@ final class ExportSheetController: NSObject, NSTextFieldDelegate {
         sheet = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 640, height: 430),
             styleMask: [.titled], backing: .buffered, defer: false)
+        sheet.appearance = parent.appearance   // ride the editor's dark chrome
         super.init()
         sheet.contentView = buildContent()
         syncFields()
