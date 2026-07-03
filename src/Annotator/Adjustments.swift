@@ -65,6 +65,70 @@ struct ImageAdjustments: Equatable {
         AdjustParam.allCases.allSatisfy { abs(self[$0] - CGFloat($0.range.neutral)) < 0.0001 }
     }
 
+    /// Hand-built auto-enhance: histogram stretch plus a gentle colour pop,
+    /// returned as ordinary slider values — the inspector shows exactly what
+    /// auto did and every choice stays tweakable. (CIImage's
+    /// autoAdjustmentFilters is face/red-eye-era and near-invisible on
+    /// screenshots — research hard truth 6.)
+    static func auto(for image: CGImage) -> ImageAdjustments {
+        var a = ImageAdjustments()
+        // 64x64 downsample — we need statistics, not pixels.
+        let side = 64
+        var px = [UInt8](repeating: 0, count: side * side * 4)
+        guard let ctx = CGContext(
+            data: &px, width: side, height: side,
+            bitsPerComponent: 8, bytesPerRow: side * 4,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return a }
+        ctx.interpolationQuality = .low
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: side, height: side))
+
+        var lumas: [Double] = []
+        lumas.reserveCapacity(side * side)
+        var saturationSum = 0.0
+        for i in stride(from: 0, to: px.count, by: 4) {
+            guard px[i + 3] > 128 else { continue }   // skip transparent margin
+            let r = Double(px[i]) / 255
+            let g = Double(px[i + 1]) / 255
+            let b = Double(px[i + 2]) / 255
+            lumas.append(0.299 * r + 0.587 * g + 0.114 * b)
+            let mx = max(r, g, b)
+            saturationSum += mx > 0 ? (mx - min(r, g, b)) / mx : 0
+        }
+        guard lumas.count > 16 else { return a }
+        lumas.sort()
+        func percentile(_ p: Double) -> Double {
+            lumas[min(Int(p * Double(lumas.count - 1)), lumas.count - 1)]
+        }
+        let p2 = percentile(0.02)
+        let p50 = percentile(0.5)
+        let p98 = percentile(0.98)
+
+        // Flat/hazy tones stretch toward full range; crisp screenshots
+        // (near-full range already) stay untouched.
+        let range = p98 - p2
+        if range > 0.05, range < 0.82 {
+            a[.contrast] = CGFloat(min(1 + (0.82 - range) * 0.9, 1.3))
+        }
+        // Re-centre the mid-tones, gently — ignore sub-visible nudges so
+        // reset dots don't light up for nothing.
+        let shift = (0.5 - (p2 + p98) / 2) * 0.25
+        if abs(shift) >= 0.015 {
+            a[.brightness] = CGFloat(max(-0.08, min(0.08, shift)))
+        }
+        // Dark-heavy image: lift the shadows.
+        if p50 < 0.35 {
+            a[.shadows] = CGFloat(min((0.35 - p50) * 1.2, 0.35))
+        }
+        // Muted (but not greyscale) colours: a touch of vibrance.
+        let meanSaturation = saturationSum / Double(lumas.count)
+        if meanSaturation > 0.02, meanSaturation < 0.3 {
+            a[.vibrance] = CGFloat(min((0.3 - meanSaturation) * 1.2, 0.3))
+        }
+        return a
+    }
+
     /// The CIImage recipe — the whole chain fuses into one GPU pass at render.
     func ciImage(from input: CIImage) -> CIImage {
         var img = input

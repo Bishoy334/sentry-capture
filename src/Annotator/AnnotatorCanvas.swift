@@ -93,18 +93,11 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
     /// Redact patches keep deriving from the clean base during preview — a
     /// visible mismatch while sliders move, corrected the moment bake runs.
     private(set) var adjustments = ImageAdjustments()
-    /// Auto-Enhance result, un-baked: sits UNDER the sliders as the preview
-    /// source, so Reset clears it and it bakes with everything else.
-    private(set) var autoEnhancedBase: CGImage?
     private var adjustedPreview: CGImage?
     private var previewRendering = false
     /// Adjustments baked into the base (sliders snap back to neutral) — the
     /// inspector re-syncs its controls.
     var onAdjustmentsBaked: (() -> Void)?
-
-    var autoEnhanceOn: Bool { autoEnhancedBase != nil }
-    /// Anything un-baked showing on screen (sliders or auto-enhance).
-    var hasPendingLook: Bool { !adjustments.isIdentity || autoEnhancedBase != nil }
 
     private(set) var cropActive = false
     private var cropRect: CGRect = .zero
@@ -921,37 +914,9 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         refreshPreview()
     }
 
-    /// Auto-Enhance toggle. On = compute the enhanced base once (the auto
-    /// filters are image-dependent, not slider values) and slide it under
-    /// the parametric stack; off = drop it. Un-baked either way.
-    func setAutoEnhance(_ on: Bool) {
-        if on {
-            guard autoEnhancedBase == nil else { return }
-            var img = CIImage(cgImage: baseImage)
-            let extent = img.extent
-            for filter in img.autoAdjustmentFilters(options: [.redEye: false]) {
-                filter.setValue(img, forKey: kCIInputImageKey)
-                img = filter.outputImage ?? img
-            }
-            guard let enhanced = ImagePipeline.ciContext.createCGImage(
-                img.cropped(to: extent), from: extent) else {
-                Toast.show("Could not enhance", symbol: "exclamationmark.triangle")
-                return
-            }
-            autoEnhancedBase = enhanced
-        } else {
-            guard autoEnhancedBase != nil else { return }
-            autoEnhancedBase = nil
-        }
-        refreshPreview()
-        onStateChange?()
-    }
-
-    /// Neutral sliders show the auto base (or nothing) directly; otherwise
-    /// kick a render.
     private func refreshPreview() {
         if adjustments.isIdentity {
-            adjustedPreview = autoEnhancedBase
+            adjustedPreview = nil
             needsDisplay = true
             return
         }
@@ -966,15 +931,14 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         guard !previewRendering else { return }
         previewRendering = true
         let baseAtStart = baseImage
-        let source = autoEnhancedBase ?? baseImage
         let pending = adjustments
         Task.detached(priority: .userInitiated) { [weak self] in
-            let rendered = pending.apply(to: source)
+            let rendered = pending.apply(to: baseAtStart)
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 self.previewRendering = false
                 guard baseAtStart === self.baseImage else { return }   // baked/undone mid-render
-                if pending == self.adjustments, source === (self.autoEnhancedBase ?? self.baseImage) {
+                if pending == self.adjustments {
                     self.adjustedPreview = rendered
                     self.needsDisplay = true
                 } else {
@@ -984,24 +948,19 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         }
     }
 
-    /// Fold the pending look (auto-enhance + sliders) into a new base image —
-    /// one undoable step. Runs on save/export and before any
-    /// pixel-destructive op (crop, lift, remove-bg), so those always work on
-    /// what the user is seeing.
+    /// Fold pending adjustments into a new base image — one undoable step.
+    /// Runs on save/export and before any pixel-destructive op (crop, lift,
+    /// remove-bg), so those always work on what the user is seeing.
     func bakeAdjustmentsIfNeeded() {
-        guard hasPendingLook else { return }
-        // apply() returns its input untouched for neutral sliders, so an
-        // auto-enhance-only look bakes as exactly the enhanced base.
-        guard let baked = adjustments.apply(to: autoEnhancedBase ?? baseImage) else {
+        guard !adjustments.isIdentity else { return }
+        guard let baked = adjustments.apply(to: baseImage) else {
             adjustments = ImageAdjustments()
-            autoEnhancedBase = nil
             adjustedPreview = nil
             return
         }
         let pre = snapshot()
         baseImage = baked
         adjustments = ImageAdjustments()
-        autoEnhancedBase = nil
         adjustedPreview = nil
         redactRenderer.setBase(baked)
         patchCache.removeAll()
@@ -1656,11 +1615,8 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         baseTransparent = state.baseTransparent
         // Pending sliders are parametric — re-render them over the restored
         // base rather than silently discarding the user's dialled-in look.
-        // The auto-enhance base is tied to the old pixels, so it drops when
-        // the base swaps.
-        if baseChanged { autoEnhancedBase = nil }
         adjustedPreview = nil
-        if hasPendingLook { refreshPreview() }
+        if !adjustments.isIdentity { refreshPreview() }
         annotations = state.annotations
         selectedID = nil
         selectedIDs = []
