@@ -85,6 +85,9 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     private var adjustActive = false
     private var adjustSliders: [NSSlider] = []
     private var adjustResets: [NSButton] = []
+    /// Index 0 = None, then EffectPreset.allCases order.
+    private var effectButtons: [NSButton] = []
+    private var effectThumbsBase: CGImage?
     private var undoButton: NSButton!
     private var redoButton: NSButton!
     private let zoomLabel = NSTextField(labelWithString: "100%")
@@ -172,8 +175,10 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             self?.zoomOutToFitIfNeeded()
         }
         canvas.onAdjustmentsBaked = { [weak self] in
-            self?.syncAdjustInspector()
-            self?.refreshChrome()
+            guard let self else { return }
+            syncAdjustInspector()
+            refreshChrome()
+            if adjustActive { refreshEffectThumbs() }   // thumbs follow the new base
         }
 
         sizeWindowToImage()
@@ -615,6 +620,40 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     }
 
     private func populateAdjustInspector() {
+        // Effects strip on top (plan Phase D): one-tap looks, thumbnails
+        // rendered from the actual image when the panel opens.
+        let effectsHead = eyebrow("EFFECTS")
+        inspectorStack.addArrangedSubview(effectsHead)
+        inspectorStack.setCustomSpacing(4, after: effectsHead)
+        for (i, title) in (["None"] + EffectPreset.allCases.map(\.label)).enumerated() {
+            let button = NSButton()
+            button.title = ""
+            button.isBordered = false
+            button.setButtonType(.momentaryChange)
+            button.imagePosition = .imageOnly
+            button.imageScaling = .scaleProportionallyUpOrDown
+            button.toolTip = title
+            button.wantsLayer = true
+            button.layer?.cornerRadius = 4
+            button.layer?.masksToBounds = true
+            button.layer?.borderColor = HUDStyle.accent.cgColor
+            button.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.04).cgColor
+            button.tag = i
+            button.target = self
+            button.action = #selector(effectTapped(_:))
+            button.translatesAutoresizingMaskIntoConstraints = false
+            button.widthAnchor.constraint(equalToConstant: 50).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 34).isActive = true
+            effectButtons.append(button)
+        }
+        for chunk in stride(from: 0, to: effectButtons.count, by: 3) {
+            let row = NSStackView(
+                views: Array(effectButtons[chunk..<min(chunk + 3, effectButtons.count)]))
+            row.orientation = .horizontal
+            row.spacing = 6
+            inspectorStack.addArrangedSubview(row)
+        }
+
         func action(_ title: String, _ selector: Selector) -> NSButton {
             let button = NSButton(title: title, target: self, action: selector)
             button.controlSize = .small
@@ -685,6 +724,49 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             adjustResets[p.rawValue].isEnabled =
                 abs(a[p] - CGFloat(p.range.neutral)) >= 0.0001
         }
+        let selected = a.effect.flatMap { EffectPreset.allCases.firstIndex(of: $0) }.map { $0 + 1 } ?? 0
+        for (i, button) in effectButtons.enumerated() {
+            button.layer?.borderWidth = i == selected ? 2 : 0
+        }
+    }
+
+    /// Render the effect thumbnails from the current base — tiny Lanczos
+    /// downsample once, then each look over it, off the main thread.
+    private func refreshEffectThumbs() {
+        let base = canvas.baseImage
+        guard base !== effectThumbsBase else { return }
+        effectThumbsBase = base
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let h = 68.0
+            let w = (h * Double(base.width) / Double(base.height)).rounded()
+            guard let small = ImageExporter.resized(base, to: CGSize(width: w, height: h))
+            else { return }
+            let smallCI = CIImage(cgImage: small)
+            var thumbs: [NSImage] = [NSImage(cgImage: small, size: .zero)]
+            for effect in EffectPreset.allCases {
+                let out = effect.apply(to: smallCI)
+                if let cg = ImagePipeline.ciContext.createCGImage(out, from: smallCI.extent) {
+                    thumbs.append(NSImage(cgImage: cg, size: .zero))
+                } else {
+                    thumbs.append(NSImage(cgImage: small, size: .zero))
+                }
+            }
+            let rendered = thumbs
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                for (i, thumb) in rendered.enumerated() where i < effectButtons.count {
+                    effectButtons[i].image = thumb
+                }
+            }
+        }
+    }
+
+    @objc private func effectTapped(_ sender: NSButton) {
+        var a = canvas.adjustments
+        a.effect = sender.tag == 0 ? nil : EffectPreset.allCases[sender.tag - 1]
+        canvas.setAdjustments(a)
+        syncAdjustInspector()
+        refreshChrome()
     }
 
     /// The background workspace: a left column, not another toolbar row —
@@ -1193,7 +1275,10 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
 
     @objc private func adjustTapped() {
         adjustActive.toggle()
-        if adjustActive { syncAdjustInspector() }
+        if adjustActive {
+            syncAdjustInspector()
+            refreshEffectThumbs()
+        }
         inspectorWidth.constant = adjustActive ? 190 : 0
         refreshChrome()
     }

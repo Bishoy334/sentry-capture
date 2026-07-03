@@ -49,12 +49,42 @@ enum AdjustParam: Int, CaseIterable {
     }
 }
 
+/// Curated one-tap looks (plan Phase D): Apple's photo-effect family plus
+/// sepia — already tasteful, zero tuning, few and good. Applied UNDER the
+/// sliders, so light/colour tweaks ride on top of the look.
+enum EffectPreset: String, CaseIterable {
+    case mono, tonal, noir, fade, chrome, instant, sepia
+
+    var label: String {
+        switch self {
+        case .mono: return "Mono"
+        case .tonal: return "Tonal"
+        case .noir: return "Noir"
+        case .fade: return "Fade"
+        case .chrome: return "Chrome"
+        case .instant: return "Instant"
+        case .sepia: return "Sepia"
+        }
+    }
+
+    func apply(to image: CIImage) -> CIImage {
+        if self == .sepia {
+            let f = CIFilter.sepiaTone()
+            f.inputImage = image
+            f.intensity = 0.7
+            return f.outputImage ?? image
+        }
+        return image.applyingFilter("CIPhotoEffect\(label)")
+    }
+}
+
 /// Parametric adjustment stack. Lives on the canvas ONLY while the user is
 /// dragging sliders — it bakes into a new base image on save/export or before
 /// any pixel-destructive op (plan invariant 3: the project file never carries
 /// a live adjustment stack).
 struct ImageAdjustments: Equatable {
     var values: [CGFloat] = AdjustParam.allCases.map { CGFloat($0.range.neutral) }
+    var effect: EffectPreset?
 
     subscript(_ p: AdjustParam) -> CGFloat {
         get { values[p.rawValue] }
@@ -62,7 +92,8 @@ struct ImageAdjustments: Equatable {
     }
 
     var isIdentity: Bool {
-        AdjustParam.allCases.allSatisfy { abs(self[$0] - CGFloat($0.range.neutral)) < 0.0001 }
+        effect == nil
+            && AdjustParam.allCases.allSatisfy { abs(self[$0] - CGFloat($0.range.neutral)) < 0.0001 }
     }
 
     /// Hand-built auto-enhance: histogram stretch plus a gentle colour pop,
@@ -131,7 +162,7 @@ struct ImageAdjustments: Equatable {
 
     /// The CIImage recipe — the whole chain fuses into one GPU pass at render.
     func ciImage(from input: CIImage) -> CIImage {
-        var img = input
+        var img = effect?.apply(to: input) ?? input
         func on(_ p: AdjustParam) -> Bool {
             abs(self[p] - CGFloat(p.range.neutral)) >= 0.0001
         }
