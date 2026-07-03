@@ -8,8 +8,9 @@
 > save-in-place. Phase G's ML upscale is BUILT (owner approved): Real-ESRGAN
 > compact x4 as a bundled Core ML model (assets/Upscaler.mlpackage, regen via
 > scripts/convert_upscaler.py), tiled inference in src/Upscaler.swift, 2x/4x
-> in the export sheet. Remaining: Phase E (heal/clone) and the Phase F GIF
-> optimisation tail.
+> in the export sheet. Phase E is BUILT: heal (border-interpolation fill) and
+> clone stamp (soft-brush painting) in src/Annotator/Retouch.swift.
+> Remaining from the whole plan: only the Phase F GIF optimisation tail.
 
 The brief, verbatim from the owner: *"I want this to also be a very good image
 editor — things like splicing objects, automatic png, image conversion. It
