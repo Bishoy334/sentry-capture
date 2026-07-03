@@ -5,10 +5,11 @@
 > effects/curves/watermark, export dialog + paste/convert, rotate/flip,
 > magnifier callout, video crop/frame-grab/burn-in (with live preview),
 > batch convert, plus Finder "Open With" for images and videos with
-> save-in-place. Phase E (heal/clone) is NOT built. Phase G's ML upscale is
-> an OPEN GATE — owner hasn't approved bundling a Core ML model; Lanczos
-> resize in the export sheet covers upscaling until then. GIF optimisation
-> (Phase F tail) also remains.
+> save-in-place. Phase G's ML upscale is BUILT (owner approved): Real-ESRGAN
+> compact x4 as a bundled Core ML model (assets/Upscaler.mlpackage, regen via
+> scripts/convert_upscaler.py), tiled inference in src/Upscaler.swift, 2x/4x
+> in the export sheet. Remaining: Phase E (heal/clone) and the Phase F GIF
+> optimisation tail.
 
 The brief, verbatim from the owner: *"I want this to also be a very good image
 editor — things like splicing objects, automatic png, image conversion. It
