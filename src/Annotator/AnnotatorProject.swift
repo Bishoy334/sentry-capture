@@ -49,6 +49,9 @@ struct AnnotatorProject {
         var redactStyle: Int
         var arrowStyle: Int
         var imageFile: String?
+        // Watermark fields — optional so pre-existing project files decode.
+        var opacity: CGFloat?
+        var tiled: Bool?
     }
 
     // MARK: Write
@@ -161,7 +164,9 @@ struct AnnotatorProject {
             textStyle: a.textStyle.rawValue,
             number: a.number,
             redactStyle: a.redactStyle.rawValue,
-            arrowStyle: a.arrowStyle.rawValue)
+            arrowStyle: a.arrowStyle.rawValue,
+            opacity: a.opacity,
+            tiled: a.tiled)
     }
 
     private static func annotation(from item: Item, in dir: URL) -> AnnotatorAnnotation {
@@ -183,6 +188,8 @@ struct AnnotatorProject {
         a.number = item.number
         a.redactStyle = AnnotatorRedactStyle(rawValue: item.redactStyle) ?? .pixelate
         a.arrowStyle = AnnotatorArrowStyle(rawValue: item.arrowStyle) ?? .straight
+        a.opacity = item.opacity ?? 1
+        a.tiled = item.tiled ?? false
         if let string = item.string {
             a.text = AnnotatorRender.attributed(
                 string, size: a.textSize, colour: a.colour, style: a.textStyle)

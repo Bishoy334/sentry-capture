@@ -349,6 +349,13 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             action: #selector(stickerTapped(_:)))
         stack.addArrangedSubview(sticker)
 
+        // Watermark: translucent text/logo object with opacity + tile in the
+        // options bar — rides the object model and the .sentryshot file.
+        let watermark = toolbarIconButton(
+            symbol: "signature", tooltip: "Watermark",
+            action: #selector(watermarkTapped(_:)))
+        stack.addArrangedSubview(watermark)
+
         // Undo/redo sit between the tools and the primary actions.
         undoButton = toolbarIconButton(
             symbol: "arrow.uturn.backward", tooltip: "Undo (⌘Z)", action: #selector(undoTapped))
@@ -1018,6 +1025,10 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             control.selectedSegment = active.rawValue
             optionsStack.addArrangedSubview(control)
         }
+        // Text objects double as watermarks — opacity/tile after the styling.
+        if let a = canvas.selectedAnnotation, a.kind == .text {
+            addWatermarkControls(for: a)
+        }
     }
 
     /// Feather (lifted subjects only), Copy, Detach and a drag-out chip.
@@ -1049,6 +1060,37 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             optionsStack.addArrangedSubview(
                 ObjectDragChip(image: ref.image, scale: canvas.imageScale))
         }
+        addWatermarkControls(for: a)
+    }
+
+    /// Opacity + tile — the watermark knobs, available on any text/image object.
+    private func addWatermarkControls(for a: AnnotatorAnnotation) {
+        let label = NSTextField(labelWithString: "Opacity")
+        label.font = .systemFont(ofSize: 11)
+        label.textColor = .secondaryLabelColor
+        let slider = NSSlider(
+            value: Double(a.opacity), minValue: 0.05, maxValue: 1,
+            target: self, action: #selector(objectOpacityChanged(_:)))
+        slider.controlSize = .small
+        slider.translatesAutoresizingMaskIntoConstraints = false
+        slider.widthAnchor.constraint(equalToConstant: 80).isActive = true
+        let tile = NSButton(
+            checkboxWithTitle: "Tile", target: self, action: #selector(objectTiledChanged(_:)))
+        tile.controlSize = .small
+        tile.state = a.tiled ? .on : .off
+        optionsStack.addArrangedSubview(label)
+        optionsStack.addArrangedSubview(slider)
+        optionsStack.addArrangedSubview(tile)
+    }
+
+    @objc private func objectOpacityChanged(_ sender: NSSlider) {
+        let commit = NSApp.currentEvent.map { $0.type == .leftMouseUp } ?? true
+        canvas.applyOpacity(CGFloat(sender.doubleValue), commit: commit)
+    }
+
+    @objc private func objectTiledChanged(_ sender: NSButton) {
+        canvas.applyTiled(sender.state == .on)
+        window.makeFirstResponder(canvas)
     }
 
     private func impliedKind(for tool: AnnotatorTool) -> AnnotatorKind? {
@@ -1271,6 +1313,36 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     @objc private func stickerPicked(_ sender: NSMenuItem) {
         canvas.addSticker(sender.title)
         window.makeFirstResponder(canvas)
+    }
+
+    @objc private func watermarkTapped(_ sender: NSButton) {
+        let menu = NSMenu()
+        let text = NSMenuItem(
+            title: "Text Watermark", action: #selector(watermarkTextPicked), keyEquivalent: "")
+        text.target = self
+        let image = NSMenuItem(
+            title: "Image Watermark…", action: #selector(watermarkImagePicked), keyEquivalent: "")
+        image.target = self
+        menu.addItem(text)
+        menu.addItem(image)
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.maxY + 4), in: sender)
+    }
+
+    @objc private func watermarkTextPicked() {
+        canvas.addTextWatermark()
+        window.makeFirstResponder(canvas)
+    }
+
+    @objc private func watermarkImagePicked() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.image]
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard let self, response == .OK, let url = panel.url,
+                  let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                  let cg = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return }
+            canvas.addImageWatermark(cg)
+            window.makeFirstResponder(canvas)
+        }
     }
 
     @objc private func adjustTapped() {

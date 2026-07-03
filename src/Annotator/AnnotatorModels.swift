@@ -213,6 +213,9 @@ struct AnnotatorAnnotation: Identifiable, Equatable {
     var redactStyle: AnnotatorRedactStyle = .pixelate
     var arrowStyle: AnnotatorArrowStyle = .straight
     var imageRef: AnnotatorImageRef?   // .image kind
+    /// Watermark plumbing (text/image objects): translucency and repeat.
+    var opacity: CGFloat = 1
+    var tiled: Bool = false
 }
 
 // MARK: - Geometry
@@ -492,6 +495,9 @@ enum AnnotatorRender {
     ) {
         ctx.saveGState()
         defer { ctx.restoreGState() }
+        if a.opacity < 1 {
+            ctx.setAlpha(a.opacity)   // watermarks; 1 = the untouched default
+        }
         switch a.kind {
         case .line:
             ctx.setStrokeColor(a.colour.cgColor)
@@ -601,6 +607,36 @@ enum AnnotatorRender {
                 str.draw(at: CGPoint(
                     x: a.rect.midX - size.width / 2, y: a.rect.midY - size.height / 2))
             }
+        }
+    }
+
+    /// Tiled watermark: repeat the object across `cover` on a half-offset
+    /// grid anchored at the object's own position (so dragging the original
+    /// shifts the whole pattern). Non-tiled objects fall through to draw().
+    static func drawTiled(
+        _ a: AnnotatorAnnotation, in ctx: CGContext, canvasHeight: CGFloat, over cover: CGRect
+    ) {
+        guard a.tiled, a.rect.width > 1, a.rect.height > 1 else {
+            draw(a, in: ctx, canvasHeight: canvasHeight, redactPatch: nil)
+            return
+        }
+        let stepX = a.rect.width * 1.8
+        let stepY = a.rect.height * 2.4
+        let firstX = a.rect.minX - (((a.rect.minX - cover.minX) / stepX).rounded(.up)) * stepX
+        let firstY = a.rect.minY - (((a.rect.minY - cover.minY) / stepY).rounded(.up)) * stepY
+        var row = 0
+        var y = firstY
+        while y < cover.maxY {
+            let rowShift = row % 2 == 0 ? 0 : stepX / 2   // brick-lay the rows
+            var x = firstX - stepX + rowShift
+            while x < cover.maxX {
+                var tile = AnnotatorGeo.translate(a, by: CGPoint(x: x - a.rect.minX, y: y - a.rect.minY))
+                tile.tiled = false
+                draw(tile, in: ctx, canvasHeight: canvasHeight, redactPatch: nil)
+                x += stepX
+            }
+            y += stepY
+            row += 1
         }
     }
 
@@ -732,7 +768,11 @@ enum AnnotatorRender {
             over: canvas,
             in: ctx)
         for a in annotations where a.kind != .redact && a.kind != .spotlight {
-            draw(a, in: ctx, canvasHeight: imageSize.height, redactPatch: nil)
+            if a.tiled {
+                drawTiled(a, in: ctx, canvasHeight: imageSize.height, over: canvas)
+            } else {
+                draw(a, in: ctx, canvasHeight: imageSize.height, redactPatch: nil)
+            }
         }
         NSGraphicsContext.restoreGraphicsState()
         return ctx.makeImage()

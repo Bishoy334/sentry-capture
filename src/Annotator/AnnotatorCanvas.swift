@@ -268,8 +268,12 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         AnnotatorRender.drawSpotlightDim(spotlights: spotlights, over: canvasRect, in: ctx)
         for a in annotations where a.kind != .redact && a.kind != .spotlight {
             guard a.id != editingTextID,
-                  AnnotatorGeo.displayBounds(of: a).intersects(dirtyRect) else { continue }
-            AnnotatorRender.draw(a, in: ctx, canvasHeight: h, redactPatch: nil)
+                  a.tiled || AnnotatorGeo.displayBounds(of: a).intersects(dirtyRect) else { continue }
+            if a.tiled {
+                AnnotatorRender.drawTiled(a, in: ctx, canvasHeight: h, over: canvasRect)
+            } else {
+                AnnotatorRender.draw(a, in: ctx, canvasHeight: h, redactPatch: nil)
+            }
         }
         if !cropActive {
             for id in selectedIDs where id != selectedID {
@@ -360,9 +364,10 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
             y: visible.midY - imageOriginInView.y))
     }
 
-    private func addImageObject(_ cg: CGImage, centredAt p: CGPoint) {
+    private func addImageObject(_ cg: CGImage, centredAt p: CGPoint, opacity: CGFloat = 1) {
         let pre = snapshot()
         var a = AnnotatorAnnotation(kind: .image)
+        a.opacity = opacity
         a.imageRef = AnnotatorImageRef(image: cg)
         var w = CGFloat(cg.width) / imageScale
         var h = CGFloat(cg.height) / imageScale
@@ -988,6 +993,52 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         onAdjustmentsBaked?()
     }
 
+    // MARK: Watermarks
+
+    /// Bottom-right translucent text object; double-click edits the wording,
+    /// options bar drives opacity/tiling. Rides the ordinary object model.
+    func addTextWatermark() {
+        let pre = snapshot()
+        var a = AnnotatorAnnotation(kind: .text)
+        a.colour = .white
+        a.textSize = 28
+        a.opacity = 0.35
+        a.text = AnnotatorRender.attributed(
+            "© Watermark", size: 28, colour: .white, style: .standard)
+        let size = a.text?.size() ?? .zero
+        a.rect = CGRect(
+            x: max(pointSize.width - size.width - 24, 8),
+            y: max(pointSize.height - size.height - 20, 8),
+            width: size.width, height: size.height)
+        annotations.append(a)
+        setSelected(a.id)
+        setNeedsDisplay(AnnotatorGeo.displayBounds(of: a))
+        registerUndo(pre, name: "Watermark")
+        onStateChange?()
+    }
+
+    func addImageWatermark(_ cg: CGImage) {
+        addImageObject(cg, centredAt: CGPoint(
+            x: pointSize.width / 2, y: pointSize.height / 2), opacity: 0.35)
+    }
+
+    func applyOpacity(_ value: CGFloat, commit: Bool) {
+        guard let id = selectedID else { return }
+        if featherPreState == nil { featherPreState = snapshot() }
+        update(id) { $0.opacity = value }
+        if commit {
+            if let pre = featherPreState { registerUndoIfChanged(pre, name: "Opacity") }
+            featherPreState = nil
+        }
+    }
+
+    func applyTiled(_ tiled: Bool) {
+        guard let id = selectedID else { return }
+        let pre = snapshot()
+        update(id) { $0.tiled = tiled }
+        registerUndoIfChanged(pre, name: tiled ? "Tile" : "Untile")
+    }
+
     // MARK: Lift feather (options bar)
 
     /// nil = not a lifted object (plain dropped-in image) — no feather control.
@@ -1175,9 +1226,10 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
     private func update(_ id: UUID, _ mutate: (inout AnnotatorAnnotation) -> Void) {
         guard let i = index(of: id) else { return }
         let before = AnnotatorGeo.displayBounds(of: annotations[i])
+        let wasTiled = annotations[i].tiled
         mutate(&annotations[i])
-        if annotations[i].kind == .spotlight {
-            needsDisplay = true   // the veil covers the whole canvas
+        if annotations[i].kind == .spotlight || annotations[i].tiled || wasTiled {
+            needsDisplay = true   // veil / tile pattern covers the whole canvas
         } else {
             setNeedsDisplay(before.union(AnnotatorGeo.displayBounds(of: annotations[i])))
         }
