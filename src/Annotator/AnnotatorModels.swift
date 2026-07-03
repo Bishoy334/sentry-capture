@@ -5,7 +5,7 @@ import CoreImage.CIFilterBuiltins
 // MARK: - Tools
 
 enum AnnotatorTool: CaseIterable {
-    case select, crop, lift, arrow, line, rect, filledRect, ellipse, draw, highlighter, text, counter, redact, spotlight, magnifier
+    case select, crop, lift, arrow, line, rect, filledRect, ellipse, draw, highlighter, text, counter, redact, spotlight, magnifier, heal, clone
 
     var key: String {
         switch self {
@@ -13,6 +13,8 @@ enum AnnotatorTool: CaseIterable {
         case .crop: return "k"
         case .lift: return "w"
         case .magnifier: return "g"
+        case .heal: return "j"
+        case .clone: return "n"
         case .arrow: return "a"
         case .line: return "l"
         case .rect: return "r"
@@ -33,6 +35,8 @@ enum AnnotatorTool: CaseIterable {
         case .crop: return "crop"
         case .lift: return "wand.and.stars"
         case .magnifier: return "plus.magnifyingglass"
+        case .heal: return "bandage"
+        case .clone: return "scope"
         case .arrow: return "arrow.up.right"
         case .line: return "line.diagonal"
         case .rect: return "rectangle"
@@ -53,6 +57,8 @@ enum AnnotatorTool: CaseIterable {
         case .crop: return "Crop"
         case .lift: return "Lift Subject"
         case .magnifier: return "Magnify"
+        case .heal: return "Heal"
+        case .clone: return "Clone Stamp"
         case .arrow: return "Arrow"
         case .line: return "Line"
         case .rect: return "Rectangle"

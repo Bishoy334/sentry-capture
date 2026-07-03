@@ -155,7 +155,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     private static let toolbarGroups: [[AnnotatorTool]] = [
         [.crop, .lift],
         [.arrow, .line, .rect, .filledRect, .ellipse],
-        [.highlighter, .redact, .spotlight, .magnifier, .counter],
+        [.highlighter, .redact, .heal, .clone, .spotlight, .magnifier, .counter],
         [.draw, .text],
         [.select],
     ]
@@ -1014,12 +1014,36 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             return
         }
 
-        // The lift tool has no styling — the bar coaches the gesture instead.
+        func hint(_ text: String) {
+            let label = NSTextField(labelWithString: text)
+            label.font = .systemFont(ofSize: 11)
+            label.textColor = .secondaryLabelColor
+            optionsStack.addArrangedSubview(label)
+        }
+        // Gesture tools have no styling — the bar coaches the gesture instead.
         if canvas.tool == .lift, canvas.selectedAnnotation == nil {
-            let hint = NSTextField(labelWithString: "Click a subject to lift it out")
-            hint.font = .systemFont(ofSize: 11)
-            hint.textColor = .secondaryLabelColor
-            optionsStack.addArrangedSubview(hint)
+            hint("Click a subject to lift it out")
+            return
+        }
+        if canvas.tool == .heal, canvas.selectedAnnotation == nil {
+            hint("Drag across a blemish — the area refills from its surroundings")
+            return
+        }
+        if canvas.tool == .clone, canvas.selectedAnnotation == nil {
+            hint(canvas.cloneSource == nil
+                ? "Option-click a source point, then paint"
+                : "Paint to clone from the marked source")
+            let label = NSTextField(labelWithString: "Brush")
+            label.font = .systemFont(ofSize: 11)
+            label.textColor = .secondaryLabelColor
+            let slider = NSSlider(
+                value: Double(canvas.currentBrushSize), minValue: 8, maxValue: 80,
+                target: self, action: #selector(brushSizeChanged(_:)))
+            slider.controlSize = .small
+            slider.translatesAutoresizingMaskIntoConstraints = false
+            slider.widthAnchor.constraint(equalToConstant: 100).isActive = true
+            optionsStack.addArrangedSubview(label)
+            optionsStack.addArrangedSubview(slider)
             return
         }
 
@@ -1192,7 +1216,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
 
     private func impliedKind(for tool: AnnotatorTool) -> AnnotatorKind? {
         switch tool {
-        case .select, .crop, .lift: return nil
+        case .select, .crop, .lift, .heal, .clone: return nil
         case .arrow: return .arrow
         case .line: return .line
         case .rect: return .rect
@@ -1365,6 +1389,10 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         if !canvas.isEditingText {
             window.makeFirstResponder(canvas)
         }
+    }
+
+    @objc private func brushSizeChanged(_ sender: NSSlider) {
+        canvas.currentBrushSize = CGFloat(sender.doubleValue)
     }
 
     @objc private func magnifierZoomChanged(_ sender: NSSegmentedControl) {

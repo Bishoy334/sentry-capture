@@ -42,6 +42,8 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         case cropMove(last: CGPoint)
         case cropResize(handle: AnnotatorHandle, original: CGRect)
         case marquee(anchor: CGPoint)
+        case healRect(anchor: CGPoint)
+        case cloneStroke
     }
 
     // MARK: State
@@ -89,6 +91,16 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
     private var featherPreState: State?
     private var hoverInstances = IndexSet()
     private var hoverOverlay: CGImage?
+
+    /// Retouch (Phase E). The clone source survives tool switches; stroke
+    /// state lives only between mouseDown and mouseUp.
+    private(set) var cloneSource: CGPoint?
+    private var cloneStamps: [CGPoint] = []
+    private var cloneStrokeBase: CGImage?
+    private var cloneOffset: CGPoint = .zero
+    var currentBrushSize: CGFloat = 28
+    private var healDragRect: CGRect = .zero
+    private var brushCursorPoint: CGPoint?
 
     /// Pending (un-baked) slider adjustments plus their preview render. The
     /// preview swaps in for display only; baseImage stays clean until bake.
@@ -286,6 +298,42 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
             if let id = selectedID, let sel = annotation(id) {
                 drawChrome(sel, in: ctx)
             }
+        }
+        // Live clone stroke: stamps preview exactly as they will bake.
+        if case .cloneStroke = drag, let strokeBase = cloneStrokeBase {
+            Retouch.drawStamps(
+                cloneStamps, brush: currentBrushSize, offset: cloneOffset,
+                source: strokeBase, scale: imageScale, in: ctx, canvasHeight: h)
+        }
+        if tool == .heal, healDragRect.width + healDragRect.height > 2 {
+            ctx.saveGState()
+            ctx.setStrokeColor(HUDStyle.accent.cgColor)
+            ctx.setLineWidth(1 / zoom)
+            ctx.setLineDash(phase: 0, lengths: [4 / zoom, 3 / zoom])
+            ctx.stroke(healDragRect)
+            ctx.restoreGState()
+        }
+        if tool == .clone {
+            ctx.saveGState()
+            if let source = cloneSource {
+                // Source marker: small amber crosshair.
+                ctx.setStrokeColor(HUDStyle.accent.cgColor)
+                ctx.setLineWidth(1.5 / zoom)
+                let arm = 7 / zoom
+                ctx.move(to: CGPoint(x: source.x - arm, y: source.y))
+                ctx.addLine(to: CGPoint(x: source.x + arm, y: source.y))
+                ctx.move(to: CGPoint(x: source.x, y: source.y - arm))
+                ctx.addLine(to: CGPoint(x: source.x, y: source.y + arm))
+                ctx.strokePath()
+            }
+            if let p = brushCursorPoint {
+                ctx.setStrokeColor(NSColor.white.withAlphaComponent(0.8).cgColor)
+                ctx.setLineWidth(1 / zoom)
+                ctx.strokeEllipse(in: CGRect(
+                    x: p.x - currentBrushSize / 2, y: p.y - currentBrushSize / 2,
+                    width: currentBrushSize, height: currentBrushSize))
+            }
+            ctx.restoreGState()
         }
         if tool == .lift, let hoverOverlay {
             // Detected-subject preview: analysis-resolution amber tint
@@ -598,6 +646,27 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
             break   // entering the tool activates crop mode; handled above
         case .lift:
             liftAtPoint(p)
+        case .heal:
+            preGesture = nil   // heal registers its own undo at mouseUp
+            bakeAdjustmentsIfNeeded()
+            healDragRect = CGRect(origin: p, size: .zero)
+            drag = .healRect(anchor: p)
+        case .clone:
+            preGesture = nil   // ditto — the stroke bakes with one undo
+            if NSEvent.modifierFlags.contains(.option) {
+                cloneSource = p
+                needsDisplay = true
+                onStateChange?()
+            } else if let source = cloneSource {
+                bakeAdjustmentsIfNeeded()
+                cloneOffset = CGPoint(x: source.x - p.x, y: source.y - p.y)
+                cloneStrokeBase = baseImage
+                cloneStamps = [p]
+                drag = .cloneStroke
+                needsDisplay = true
+            } else {
+                Toast.show("Option-click to set the clone source", symbol: "scope")
+            }
         case .text:
             beginTextEditing(at: p, existing: nil)
         case .counter:
@@ -762,6 +831,17 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
             let before = marqueeRect
             marqueeRect = AnnotatorGeo.rect(from: anchor, to: p)
             setNeedsDisplay(before.union(marqueeRect).insetBy(dx: -2, dy: -2))
+        case .healRect(let anchor):
+            let before = healDragRect
+            healDragRect = AnnotatorGeo.rect(from: anchor, to: p)
+            setNeedsDisplay(before.union(healDragRect).insetBy(dx: -3, dy: -3))
+        case .cloneStroke:
+            if let last = cloneStamps.last,
+               hypot(p.x - last.x, p.y - last.y) < max(currentBrushSize / 4, 2) { break }
+            cloneStamps.append(p)
+            setNeedsDisplay(CGRect(
+                x: p.x - currentBrushSize, y: p.y - currentBrushSize,
+                width: currentBrushSize * 2, height: currentBrushSize * 2))
         }
         switch drag {
         case .drawRect, .drawLine, .freehand, .move, .resize:
@@ -823,6 +903,15 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
             let dirty = marqueeRect.insetBy(dx: -2, dy: -2)
             marqueeRect = .zero
             setNeedsDisplay(dirty)
+        case .healRect:
+            let rect = healDragRect
+            healDragRect = .zero
+            if rect.width >= 3, rect.height >= 3 {
+                bakeHeal(rect)
+            }
+            needsDisplay = true
+        case .cloneStroke:
+            bakeCloneStroke()
         default:
             break
         }
@@ -841,12 +930,27 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
     }
 
     override func mouseMoved(with event: NSEvent) {
+        if tool == .clone {
+            let vp = convert(event.locationInWindow, from: nil)
+            let p = CGPoint(x: vp.x - imageOriginInView.x, y: vp.y - imageOriginInView.y)
+            let dirty = (brushCursorPoint.map { CGRect(origin: $0, size: .zero) } ?? .null)
+                .union(CGRect(origin: p, size: .zero))
+                .insetBy(dx: -currentBrushSize, dy: -currentBrushSize)
+            brushCursorPoint = p
+            setNeedsDisplay(dirty)
+            return
+        }
         guard tool == .lift else { return }
         refreshHover(at: convert(event.locationInWindow, from: nil))
     }
 
     override func mouseExited(with event: NSEvent) {
         if tool == .lift { setHover(IndexSet()) }
+        if tool == .clone, let p = brushCursorPoint {
+            brushCursorPoint = nil
+            setNeedsDisplay(CGRect(origin: p, size: .zero)
+                .insetBy(dx: -currentBrushSize, dy: -currentBrushSize))
+        }
     }
 
     // MARK: Subject lift
@@ -1011,6 +1115,50 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         registerUndo(pre, name: "Adjust")
         needsDisplay = true
         onAdjustmentsBaked?()
+    }
+
+    // MARK: Retouch (Phase E)
+
+    private func bakeHeal(_ rectPoints: CGRect) {
+        let px = CGRect(
+            x: rectPoints.minX * imageScale, y: rectPoints.minY * imageScale,
+            width: rectPoints.width * imageScale, height: rectPoints.height * imageScale
+        ).integral.intersection(CGRect(x: 0, y: 0, width: baseImage.width, height: baseImage.height))
+        guard px.width >= 2, px.height >= 2 else { return }
+        guard let healed = Retouch.healed(base: baseImage, holePx: px) else {
+            Toast.show("Could not heal that region", symbol: "bandage")
+            return
+        }
+        applyRetouchedBase(healed, name: "Heal")
+    }
+
+    private func bakeCloneStroke() {
+        defer {
+            cloneStamps = []
+            cloneStrokeBase = nil
+            needsDisplay = true
+        }
+        guard let strokeBase = cloneStrokeBase, !cloneStamps.isEmpty else { return }
+        guard let stamped = Retouch.stamped(
+            base: baseImage, stamps: cloneStamps, brush: currentBrushSize,
+            offset: cloneOffset, source: strokeBase, scale: imageScale) else {
+            Toast.show("Could not clone", symbol: "scope")
+            return
+        }
+        applyRetouchedBase(stamped, name: "Clone")
+    }
+
+    /// Shared bookkeeping for destructive base swaps that keep annotations.
+    private func applyRetouchedBase(_ image: CGImage, name: String) {
+        let pre = snapshot()
+        baseImage = image
+        redactRenderer.setBase(image)
+        patchCache.removeAll()
+        magnifierCache.removeAll()
+        liftEngine.invalidate()
+        registerUndo(pre, name: name)
+        needsDisplay = true
+        onStateChange?()
     }
 
     // MARK: Rotate / flip
@@ -1520,6 +1668,10 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
             liftEngine.prepare(base: baseImage)   // warm up while the user aims
         } else if old == .lift {
             setHover(IndexSet())
+        }
+        if old == .clone {
+            brushCursorPoint = nil
+            needsDisplay = true
         }
         if tool == .crop {
             cropActive = true
