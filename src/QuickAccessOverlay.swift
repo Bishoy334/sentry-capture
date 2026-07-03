@@ -523,7 +523,15 @@ private final class QAOCardView: NSView, NSDraggingSource {
         captionName.stringValue = item.fileURL?.lastPathComponent ?? "Not saved yet"
         switch item.payload {
         case .still(let still):
-            captionMeta.stringValue = "\(still.image.width)×\(still.image.height)"
+            var meta = "\(still.image.width)×\(still.image.height)"
+            if let url = item.fileURL,
+               let bytes = (try? FileManager.default.attributesOfItem(
+                   atPath: url.path)[.size]) as? Int, bytes > 0 {
+                let size = ByteCountFormatter.string(
+                    fromByteCount: Int64(bytes), countStyle: .file)
+                meta += " · \(size) \(url.pathExtension.uppercased())"
+            }
+            captionMeta.stringValue = meta
         case .video:
             captionMeta.stringValue = videoMetaText ?? ""
         }

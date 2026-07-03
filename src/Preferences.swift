@@ -204,7 +204,12 @@ private struct PrefsScreenshotsPane: View {
                     Text("PNG").tag(ImageFormat.png)
                     Text("JPG").tag(ImageFormat.jpg)
                 }
-                TextField("Filename prefix", text: $settings.filenamePrefix)
+                VStack(alignment: .leading, spacing: 2) {
+                    TextField("Filename prefix", text: $settings.filenamePrefix)
+                    Text("Tokens: {date} {time} {app} {counter} — e.g. \"{app} {date} {counter}\"")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
                 Toggle("Scale Retina screenshots down to 1x", isOn: $settings.downscaleRetina)
                 Toggle("Freeze screen while selecting", isOn: $settings.freezeSelectionScreen)
                 Toggle("Window captures include shadow (transparent PNG)",

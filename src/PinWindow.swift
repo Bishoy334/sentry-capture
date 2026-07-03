@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 
 /// Pinned screenshots — borderless always-on-top panels the user can move,
 /// resize from the corner, fade with the scroll wheel and act on via the
@@ -100,6 +101,22 @@ private final class PinPanel: NSPanel {
             return true
         }
         return super.performKeyEquivalent(with: event)
+    }
+
+    /// Arrow keys nudge the pin 1pt (Shift = 10pt) for pixel positioning.
+    override func keyDown(with event: NSEvent) {
+        let step: CGFloat = event.modifierFlags.contains(.shift) ? 10 : 1
+        var origin = frame.origin
+        switch Int(event.keyCode) {
+        case kVK_LeftArrow: origin.x -= step
+        case kVK_RightArrow: origin.x += step
+        case kVK_UpArrow: origin.y += step
+        case kVK_DownArrow: origin.y -= step
+        default:
+            super.keyDown(with: event)
+            return
+        }
+        setFrameOrigin(origin)
     }
 
     func fadeOutAndClose() {

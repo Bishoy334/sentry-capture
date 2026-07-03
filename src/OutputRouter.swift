@@ -39,7 +39,7 @@ final class OutputRouter {
             }
             if let data, let record = SentryStore.shared.createStillRecord(
                 still, data: data,
-                fileName: nextFileName(ext: format.fileExtension),
+                fileName: nextFileName(ext: format.fileExtension, appName: still.origin?.appName),
                 mimeType: format.mimeType
             ) {
                 still.recordID = record.id
@@ -262,10 +262,42 @@ final class OutputRouter {
 
     // MARK: Filenames
 
-    func nextFileName(ext: String) -> String {
+    /// The prefix doubles as a template: {date} {time} {app} {counter}
+    /// tokens expand when present; a plain prefix keeps the classic
+    /// "Prefix yyyy-MM-dd at HH.mm.ss" shape.
+    func nextFileName(ext: String, appName: String? = nil) -> String {
+        let template = Settings.shared.filenamePrefix
         let fmt = DateFormatter()
-        fmt.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
-        return "\(Settings.shared.filenamePrefix) \(fmt.string(from: Date())).\(ext)"
+        var name: String
+        if template.contains("{") {
+            fmt.dateFormat = "yyyy-MM-dd"
+            let date = fmt.string(from: Date())
+            fmt.dateFormat = "HH.mm.ss"
+            let time = fmt.string(from: Date())
+            name = template
+                .replacingOccurrences(of: "{date}", with: date)
+                .replacingOccurrences(of: "{time}", with: time)
+                .replacingOccurrences(of: "{app}", with: appName ?? "")
+            if name.contains("{counter}") {
+                let counter = UserDefaults.standard.integer(forKey: "filenameCounter") + 1
+                UserDefaults.standard.set(counter, forKey: "filenameCounter")
+                name = name.replacingOccurrences(of: "{counter}", with: String(counter))
+            }
+            // Empty tokens (no app name) leave double spaces behind.
+            while name.contains("  ") {
+                name = name.replacingOccurrences(of: "  ", with: " ")
+            }
+            name = name.trimmingCharacters(in: .whitespaces)
+            if name.isEmpty { name = "Capture" }
+        } else {
+            fmt.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
+            name = "\(template) \(fmt.string(from: Date()))"
+        }
+        // App names can carry path-hostile characters.
+        name = name
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: ".")
+        return "\(name).\(ext)"
     }
 
     func nextFileURL(ext: String) -> URL {
