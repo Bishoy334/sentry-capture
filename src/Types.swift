@@ -45,6 +45,10 @@ struct StillCapture {
     /// Transparency matters (window capture with shadow) — delivery forces
     /// PNG regardless of the configured format, or the alpha dies in JPEG.
     var hasAlpha: Bool = false
+    /// Set when the editor opened an external FILE (Finder "Open With"):
+    /// Save writes back to this URL in place — no Sentry record is created
+    /// unless the user explicitly sends/exports one.
+    var sourceFileURL: URL? = nil
 
     var pointSize: NSSize {
         NSSize(width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale)

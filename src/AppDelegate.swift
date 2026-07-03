@@ -9,7 +9,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls {
-            SentryRegistry.handle(url)
+            if url.isFileURL {
+                AnnotatorController.shared.openFile(at: url)
+            } else {
+                SentryRegistry.handle(url)
+            }
         }
     }
 

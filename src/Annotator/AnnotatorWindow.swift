@@ -14,6 +14,24 @@ final class AnnotatorController {
     /// One editor window per capture; multiple may be open at once. When the
     /// capture's record carries a .sentryshot project, the clean base and the
     /// live annotation objects are restored instead of the baked media.
+    /// Finder "Open With" / dropped files: decode any ImageIO-readable
+    /// format; the editor's Save writes back to the file in place.
+    func openFile(at url: URL) {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let cg = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            Toast.show(
+                "Could not open \(url.lastPathComponent)",
+                symbol: "exclamationmark.triangle")
+            return
+        }
+        let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        let dpi = props?[kCGImagePropertyDPIWidth] as? Double ?? 72
+        var still = StillCapture(
+            image: cg, scale: CGFloat(max(dpi / 72, 1)), source: .area, screenRect: nil)
+        still.sourceFileURL = url
+        open(still)
+    }
+
     func open(_ still: StillCapture) {
         guard still.image.width > 0, still.image.height > 0 else {
             Toast.show("Nothing to annotate", symbol: "exclamationmark.triangle")
@@ -72,6 +90,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     private let source: StillSource
     private let origin: CaptureOrigin?
     private let recordID: String?
+    private let sourceFileURL: URL?
     private let windowUndoManager = UndoManager()
 
     private var toolButtons: [(tool: AnnotatorTool, button: NSButton)] = []
@@ -139,6 +158,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         source = still.source
         origin = still.origin
         recordID = still.recordID
+        sourceFileURL = still.sourceFileURL
         canvas = AnnotatorCanvas(still: still)
         if !restoredAnnotations.isEmpty {
             canvas.restoreAnnotations(restoredAnnotations)
@@ -529,7 +549,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     private func refreshImageMeta() {
         let w = canvas.baseImage.width
         let h = canvas.baseImage.height
-        window.title = "Annotate — \(w)x\(h)"
+        window.title = "\(sourceFileURL?.lastPathComponent ?? "Annotate") — \(w)x\(h)"
         dimensionsLabel.stringValue = "\(w) × \(h) px"
     }
 
@@ -1583,6 +1603,12 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
 
     @objc private func saveTapped() {
         guard let still = exportStill() else { return }
+        // External file: Save writes back in place, Preview-style — no
+        // Sentry record, no .sentryshot sidecar in the user's folders.
+        if let url = sourceFileURL {
+            saveInPlace(still, to: url)
+            return
+        }
         guard OutputRouter.shared.reExport(still, annotationCount: canvas.annotations.count) != nil
         else { return }
         // Editable state rides along with the record so the capture can be
@@ -1602,6 +1628,38 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             }
         }
         Toast.show("Saved", symbol: "square.and.arrow.down")
+    }
+
+    /// Re-encode in the file's own format where possible. Transparency on a
+    /// JPEG, or a read-only source format (WebP/JXL/BMP…), lands beside the
+    /// original as PNG instead of silently losing data.
+    private func saveInPlace(_ still: StillCapture, to url: URL) {
+        let ext = url.pathExtension.lowercased()
+        var format: ExportFormat
+        switch ext {
+        case "jpg", "jpeg": format = .jpeg
+        case "heic": format = .heic
+        case "tif", "tiff": format = .tiff
+        case "avif": format = .avif
+        default: format = .png
+        }
+        if format == .jpeg, still.hasAlpha { format = .png }
+        let extMatches = ext == format.fileExtension
+            || (format == .jpeg && ext == "jpeg")
+            || (format == .tiff && ext == "tif")
+        let target = extMatches
+            ? url
+            : url.deletingPathExtension().appendingPathExtension(format.fileExtension)
+        guard let data = ImageExporter.encode(
+                  still.image, format: format, quality: 0.9, dpiScale: still.scale),
+              (try? data.write(to: target)) != nil else {
+            Toast.show("Could not save \(target.lastPathComponent)",
+                       symbol: "exclamationmark.triangle")
+            return
+        }
+        Toast.show(
+            target == url ? "Saved" : "Saved as \(target.lastPathComponent)",
+            symbol: "square.and.arrow.down")
     }
 
     @objc private func saveAsTapped() {
