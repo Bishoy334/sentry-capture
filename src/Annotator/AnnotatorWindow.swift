@@ -34,7 +34,7 @@ final class AnnotatorController {
 
     /// Video burn-in flow: annotate a frame, Apply hands back the
     /// annotations-only overlay (frame-sized, transparent background).
-    func openForBurnIn(_ still: StillCapture, onApply: @escaping (CGImage) -> Void) {
+    func openForBurnIn(_ still: StillCapture, onApply: @escaping (CGImage?) -> Void) {
         let editor = AnnotatorWindowController(still: still)
         editor.onBurnIn = onApply
         editor.onClose = { [weak self, weak editor] in
@@ -125,8 +125,9 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     private var redoButton: NSButton!
     private var saveButton: NSButton!
     /// Burn-in mode (video editor's "Annotate frame"): Save hands back the
-    /// annotations-only overlay instead of writing anything.
-    var onBurnIn: ((CGImage) -> Void)? {
+    /// annotations-only overlay instead of writing anything; nil = the user
+    /// deleted everything, which clears the burn.
+    var onBurnIn: ((CGImage?) -> Void)? {
         didSet {
             saveButton?.title = onBurnIn == nil ? "Save" : "Apply to Video"
         }
@@ -1627,6 +1628,11 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         if let onBurnIn {
             canvas.commitTextEditingIfAny()
             canvas.bakeAdjustmentsIfNeeded()
+            if canvas.annotations.isEmpty {
+                onBurnIn(nil)   // nothing drawn = clear any existing burn
+                window.close()
+                return
+            }
             guard let overlay = canvas.flattenedOverlay() else {
                 Toast.show("Could not render overlay", symbol: "exclamationmark.triangle")
                 return

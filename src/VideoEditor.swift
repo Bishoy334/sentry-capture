@@ -102,6 +102,9 @@ private final class VideoEditorView: NSView {
     private let playerView = AVPlayerView()
     private let timeline = VideoTimelineView()
     private let cropOverlay = VideoCropOverlay()
+    /// Live preview of the burn-in (research §7a: the CA tool is
+    /// export-only — the player shows this AppKit twin instead).
+    private let burnPreview = BurnPreviewView()
     /// Natural size with the preferred transform applied — the space crop
     /// coordinates live in.
     private var orientedVideoSize: CGSize = .zero
@@ -175,6 +178,9 @@ private final class VideoEditorView: NSView {
             self?.seek(toFraction: fraction)
         }
         addSubview(timeline)
+
+        burnPreview.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(burnPreview)
 
         cropOverlay.isHidden = true
         cropOverlay.translatesAutoresizingMaskIntoConstraints = false
@@ -271,6 +277,10 @@ private final class VideoEditorView: NSView {
             playerView.leadingAnchor.constraint(equalTo: leadingAnchor),
             playerView.trailingAnchor.constraint(equalTo: trailingAnchor),
             playerView.bottomAnchor.constraint(equalTo: timeline.topAnchor),
+            burnPreview.topAnchor.constraint(equalTo: playerView.topAnchor),
+            burnPreview.leadingAnchor.constraint(equalTo: playerView.leadingAnchor),
+            burnPreview.trailingAnchor.constraint(equalTo: playerView.trailingAnchor),
+            burnPreview.bottomAnchor.constraint(equalTo: playerView.bottomAnchor),
             cropOverlay.topAnchor.constraint(equalTo: playerView.topAnchor),
             cropOverlay.leadingAnchor.constraint(equalTo: playerView.leadingAnchor),
             cropOverlay.trailingAnchor.constraint(equalTo: playerView.trailingAnchor),
@@ -296,6 +306,7 @@ private final class VideoEditorView: NSView {
                 let oriented = natural.applying(transform)
                 orientedVideoSize = CGSize(width: abs(oriented.width), height: abs(oriented.height))
                 cropOverlay.videoSize = orientedVideoSize
+                burnPreview.videoSize = orientedVideoSize
             }
             // Handles can't cross closer than half a second of footage.
             if durationSeconds > 0 {
@@ -632,7 +643,12 @@ private final class VideoEditorView: NSView {
                 ) { [weak self] overlay in
                     guard let self else { return }
                     burnOverlay = overlay
-                    Toast.show("Annotations will burn into the export", symbol: "pencil.tip")
+                    burnPreview.overlay = overlay
+                    Toast.show(
+                        overlay == nil
+                            ? "Annotations cleared"
+                            : "Annotations will burn into the whole exported clip",
+                        symbol: "pencil.tip")
                     refreshInfo()
                 }
             }
@@ -709,6 +725,34 @@ private final class VideoEditorView: NSView {
                 Toast.show("GIF saved", symbol: "photo.stack")
             }
         }
+    }
+}
+
+// MARK: - Burn-in preview
+
+/// Passive twin of the export-time burn layer: draws the annotations-only
+/// overlay aspect-fit over the player. Clicks fall through.
+@MainActor
+private final class BurnPreviewView: NSView {
+    var videoSize: CGSize = .zero {
+        didSet { needsDisplay = true }
+    }
+    var overlay: CGImage? {
+        didSet { needsDisplay = true }
+    }
+
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let overlay, videoSize.width > 0, videoSize.height > 0 else { return }
+        let f = min(bounds.width / videoSize.width, bounds.height / videoSize.height)
+        let w = videoSize.width * f
+        let h = videoSize.height * f
+        NSImage(cgImage: overlay, size: .zero).draw(
+            in: NSRect(x: bounds.midX - w / 2, y: bounds.midY - h / 2, width: w, height: h),
+            from: .zero, operation: .sourceOver, fraction: 1,
+            respectFlipped: true, hints: nil)
     }
 }
 
