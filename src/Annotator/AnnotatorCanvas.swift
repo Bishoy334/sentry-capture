@@ -1792,4 +1792,13 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
             $0.kind == .magnifier ? cachedMagnifierPatch(for: $0) : cachedPatch(for: $0)
         }
     }
+
+    /// Annotations alone on transparency, frame-sized — the video burn-in layer.
+    func flattenedOverlay() -> CGImage? {
+        AnnotatorRender.overlay(
+            imageSize: pointSize, scale: imageScale, annotations: annotations
+        ) {
+            $0.kind == .magnifier ? cachedMagnifierPatch(for: $0) : cachedPatch(for: $0)
+        }
+    }
 }

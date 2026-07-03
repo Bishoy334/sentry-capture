@@ -112,7 +112,10 @@ private final class VideoEditorView: NSView {
     private var volumeSlider: NSSlider!
     private var frameButton: NSButton!
     private var cropButton: NSButton!
+    private var annotateButton: NSButton!
     private var gifButton: NSButton!
+    /// Annotations-only layer (oriented full-frame) burned in at export.
+    private var burnOverlay: CGImage?
     private var copyButton: NSButton!
     private var saveButton: NSButton!
     private var spinner: NSProgressIndicator!
@@ -220,6 +223,15 @@ private final class VideoEditorView: NSView {
         cropButton.setButtonType(.pushOnPushOff)
         cropButton.toolTip = "Crop the video (double-click the frame to reset)"
 
+        annotateButton = NSButton(
+            image: NSImage(
+                systemSymbolName: "pencil.tip.crop.circle",
+                accessibilityDescription: "Annotate") ?? NSImage(),
+            target: self, action: #selector(annotateTapped))
+        annotateButton.bezelStyle = .rounded
+        annotateButton.toolTip =
+            "Annotate this frame — the drawing burns into the whole exported clip"
+
         gifButton = NSButton(title: "GIF…", target: self, action: #selector(gifTapped))
         gifButton.bezelStyle = .rounded
         gifButton.toolTip = "Export the trimmed clip as a GIF"
@@ -243,7 +255,7 @@ private final class VideoEditorView: NSView {
         spacer.setContentHuggingPriority(.init(1), for: .horizontal)
         let bar = NSStackView(views: [
             infoLabel, spacer, speedPopup, sizePopup, speaker, volumeSlider,
-            spinner, frameButton, cropButton, gifButton, copyButton, saveButton,
+            spinner, frameButton, cropButton, annotateButton, gifButton, copyButton, saveButton,
         ])
         bar.orientation = .horizontal
         bar.alignment = .centerY
@@ -377,6 +389,9 @@ private final class VideoEditorView: NSView {
         if let crop = currentCropPx() {
             text += " · crop \(Int(crop.width))×\(Int(crop.height))"
         }
+        if burnOverlay != nil {
+            text += " · annotated"
+        }
         infoLabel.stringValue = text
 
         // The byte estimate needs a full session — debounce and fill in behind.
@@ -472,20 +487,45 @@ private final class VideoEditorView: NSView {
     private func makeVideoComposition(
         for composition: AVMutableComposition
     ) async throws -> AVMutableVideoComposition? {
-        guard let cropPx = currentCropPx(),
+        let cropPx = currentCropPx()
+        guard cropPx != nil || burnOverlay != nil,
               let track = try await composition.loadTracks(withMediaType: .video).first
         else { return nil }
+        let renderRect = cropPx ?? CGRect(origin: .zero, size: orientedVideoSize)
         let vc = AVMutableVideoComposition()
-        vc.renderSize = cropPx.size
+        vc.renderSize = renderRect.size
         vc.frameDuration = CMTime(value: 1, timescale: 60)
         let instruction = AVMutableVideoCompositionInstruction()
         instruction.timeRange = CMTimeRange(start: .zero, duration: composition.duration)
         let layer = AVMutableVideoCompositionLayerInstruction(assetTrack: track)
         let transform = try await track.load(.preferredTransform)
-            .concatenating(CGAffineTransform(translationX: -cropPx.minX, y: -cropPx.minY))
+            .concatenating(CGAffineTransform(
+                translationX: -renderRect.minX, y: -renderRect.minY))
         layer.setTransform(transform, at: .zero)
         instruction.layerInstructions = [layer]
         vc.instructions = [instruction]
+
+        // Burn-in (research §7a): offline-render only — never on AVPlayer.
+        // The flipped parent keeps top-left coordinates; the overlay spans
+        // the FULL oriented frame offset by the crop, so drawings stay
+        // pinned to their pixels whatever the crop.
+        if let overlay = burnOverlay {
+            let videoLayer = CALayer()
+            videoLayer.frame = CGRect(origin: .zero, size: renderRect.size)
+            let overlayLayer = CALayer()
+            overlayLayer.contents = overlay
+            overlayLayer.contentsGravity = .resize
+            overlayLayer.frame = CGRect(
+                x: -renderRect.minX, y: -renderRect.minY,
+                width: orientedVideoSize.width, height: orientedVideoSize.height)
+            let parent = CALayer()
+            parent.frame = videoLayer.frame
+            parent.isGeometryFlipped = true   // CA is y-flipped vs video
+            parent.addSublayer(videoLayer)
+            parent.addSublayer(overlayLayer)
+            vc.animationTool = AVVideoCompositionCoreAnimationTool(
+                postProcessingAsVideoLayer: videoLayer, in: parent)
+        }
         return vc
     }
 
@@ -567,6 +607,34 @@ private final class VideoEditorView: NSView {
                     dest == url ? "Saved" : "Saved as \(dest.lastPathComponent)",
                     symbol: "square.and.arrow.down")
                 self.onSaved?()
+            }
+        }
+    }
+
+    /// Burn-in flow: grab the current frame, annotate it, Apply hands the
+    /// overlay back. Static for the whole clip (plan v1 — timed overlays are
+    /// anti-scope for now).
+    @objc private func annotateTapped() {
+        player.pause()
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.requestedTimeToleranceBefore = .zero
+        generator.requestedTimeToleranceAfter = .zero
+        generator.generateCGImageAsynchronously(for: player.currentTime()) { cg, _, error in
+            Task { @MainActor [weak self] in
+                guard let cg else {
+                    NSLog("annotate frame grab failed: \(String(describing: error))")
+                    Toast.show("Could not grab frame", symbol: "camera")
+                    return
+                }
+                AnnotatorController.shared.openForBurnIn(StillCapture(
+                    image: cg, scale: 1, source: .area, screenRect: nil)
+                ) { [weak self] overlay in
+                    guard let self else { return }
+                    burnOverlay = overlay
+                    Toast.show("Annotations will burn into the export", symbol: "pencil.tip")
+                    refreshInfo()
+                }
             }
         }
     }

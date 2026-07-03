@@ -874,6 +874,50 @@ enum AnnotatorRender {
     }
 }
 
+extension AnnotatorRender {
+    /// Annotations-only render at EXACT image size — transparent where the
+    /// base would be, no canvas growth. The video burn-in layer must align
+    /// 1:1 with the frame, so spilled annotations clip instead of resizing.
+    static func overlay(
+        imageSize: NSSize,
+        scale: CGFloat,
+        annotations: [AnnotatorAnnotation],
+        patch: (AnnotatorAnnotation) -> (rect: CGRect, image: CGImage)?
+    ) -> CGImage? {
+        guard let ctx = CGContext(
+            data: nil,
+            width: Int(imageSize.width * scale), height: Int(imageSize.height * scale),
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                | CGBitmapInfo.byteOrder32Little.rawValue
+        ) else { return nil }
+        ctx.interpolationQuality = .high
+        ctx.scaleBy(x: scale, y: scale)
+        ctx.translateBy(x: 0, y: imageSize.height)
+        ctx.scaleBy(x: 1, y: -1)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+        let frame = CGRect(origin: .zero, size: imageSize)
+        for a in annotations where a.kind == .redact {
+            draw(a, in: ctx, canvasHeight: imageSize.height, redactPatch: patch(a))
+        }
+        drawSpotlightDim(
+            spotlights: annotations.filter { $0.kind == .spotlight }.map(\.rect),
+            over: frame, in: ctx)
+        for a in annotations where a.kind != .redact && a.kind != .spotlight {
+            if a.tiled {
+                drawTiled(a, in: ctx, canvasHeight: imageSize.height, over: frame)
+            } else {
+                draw(a, in: ctx, canvasHeight: imageSize.height,
+                     redactPatch: a.kind == .magnifier ? patch(a) : nil)
+            }
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        return ctx.makeImage()
+    }
+}
+
 // MARK: - Background export
 
 extension AnnotatorRender {

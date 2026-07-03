@@ -32,6 +32,18 @@ final class AnnotatorController {
         open(still)
     }
 
+    /// Video burn-in flow: annotate a frame, Apply hands back the
+    /// annotations-only overlay (frame-sized, transparent background).
+    func openForBurnIn(_ still: StillCapture, onApply: @escaping (CGImage) -> Void) {
+        let editor = AnnotatorWindowController(still: still)
+        editor.onBurnIn = onApply
+        editor.onClose = { [weak self, weak editor] in
+            self?.editors.removeAll { $0 === editor }
+        }
+        editors.append(editor)
+        editor.show()
+    }
+
     func open(_ still: StillCapture) {
         guard still.image.width > 0, still.image.height > 0 else {
             Toast.show("Nothing to annotate", symbol: "exclamationmark.triangle")
@@ -111,6 +123,14 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     private var advancedToggle: NSButton!
     private var undoButton: NSButton!
     private var redoButton: NSButton!
+    private var saveButton: NSButton!
+    /// Burn-in mode (video editor's "Annotate frame"): Save hands back the
+    /// annotations-only overlay instead of writing anything.
+    var onBurnIn: ((CGImage) -> Void)? {
+        didSet {
+            saveButton?.title = onBurnIn == nil ? "Save" : "Apply to Video"
+        }
+    }
     private let zoomLabel = NSTextField(labelWithString: "100%")
     private let dimensionsLabel = NSTextField(labelWithString: "")
     /// Each tool remembers its own colour/width, CleanShot-style — switching
@@ -405,6 +425,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         save.font = .systemFont(ofSize: 12, weight: .medium)
         save.bezelColor = .controlAccentColor
         save.toolTip = "Save (⌘S)"
+        saveButton = save
         let actions = NSStackView(views: [undoButton, redoButton, send, pin, copy, save])
         actions.orientation = .horizontal
         actions.spacing = 2
@@ -1602,6 +1623,18 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     }
 
     @objc private func saveTapped() {
+        // Burn-in: hand the annotations-only layer back to the video editor.
+        if let onBurnIn {
+            canvas.commitTextEditingIfAny()
+            canvas.bakeAdjustmentsIfNeeded()
+            guard let overlay = canvas.flattenedOverlay() else {
+                Toast.show("Could not render overlay", symbol: "exclamationmark.triangle")
+                return
+            }
+            onBurnIn(overlay)
+            window.close()
+            return
+        }
         guard let still = exportStill() else { return }
         // External file: Save writes back in place, Preview-style — no
         // Sentry record, no .sentryshot sidecar in the user's folders.
