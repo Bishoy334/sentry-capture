@@ -85,6 +85,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     private var adjustActive = false
     private var adjustSliders: [NSSlider] = []
     private var adjustResets: [NSButton] = []
+    private var autoEnhanceButton: NSButton?
     private var undoButton: NSButton!
     private var redoButton: NSButton!
     private let zoomLabel = NSTextField(labelWithString: "100%")
@@ -520,7 +521,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         if let adjustButton {
             // Amber hints that un-baked adjustments are live even with the
             // panel closed.
-            let active = adjustActive || !canvas.adjustments.isIdentity
+            let active = adjustActive || canvas.hasPendingLook
             adjustButton.layer?.backgroundColor =
                 adjustActive ? HUDStyle.accentDeep.cgColor : nil
             adjustButton.contentTintColor = adjustActive
@@ -610,8 +611,11 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             button.font = .systemFont(ofSize: 11)
             return button
         }
+        let auto = action("Auto-Enhance", #selector(autoEnhanceTapped))
+        auto.setButtonType(.pushOnPushOff)   // un-baked toggle, not a one-shot
+        autoEnhanceButton = auto
         let header = NSStackView(views: [
-            action("Auto-Enhance", #selector(autoEnhanceTapped)),
+            auto,
             action("Reset", #selector(adjustResetAllTapped)),
         ])
         header.orientation = .horizontal
@@ -673,6 +677,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             adjustResets[p.rawValue].isEnabled =
                 abs(a[p] - CGFloat(p.range.neutral)) >= 0.0001
         }
+        autoEnhanceButton?.state = canvas.autoEnhanceOn ? .on : .off
     }
 
     /// The background workspace: a left column, not another toolbar row —
@@ -1172,12 +1177,15 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     }
 
     @objc private func adjustResetAllTapped() {
+        // Reset clears the whole pending look — sliders AND auto-enhance.
+        canvas.setAutoEnhance(false)
         canvas.setAdjustments(ImageAdjustments())
         syncAdjustInspector()
     }
 
     @objc private func autoEnhanceTapped() {
-        canvas.autoEnhance()
+        canvas.setAutoEnhance(!canvas.autoEnhanceOn)
+        syncAdjustInspector()
         window.makeFirstResponder(canvas)
     }
 

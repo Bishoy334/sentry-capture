@@ -93,11 +93,18 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
     /// Redact patches keep deriving from the clean base during preview — a
     /// visible mismatch while sliders move, corrected the moment bake runs.
     private(set) var adjustments = ImageAdjustments()
+    /// Auto-Enhance result, un-baked: sits UNDER the sliders as the preview
+    /// source, so Reset clears it and it bakes with everything else.
+    private(set) var autoEnhancedBase: CGImage?
     private var adjustedPreview: CGImage?
-    private var previewTask: Task<Void, Never>?
+    private var previewRendering = false
     /// Adjustments baked into the base (sliders snap back to neutral) — the
     /// inspector re-syncs its controls.
     var onAdjustmentsBaked: (() -> Void)?
+
+    var autoEnhanceOn: Bool { autoEnhancedBase != nil }
+    /// Anything un-baked showing on screen (sliders or auto-enhance).
+    var hasPendingLook: Bool { !adjustments.isIdentity || autoEnhancedBase != nil }
 
     private(set) var cropActive = false
     private var cropRect: CGRect = .zero
@@ -907,44 +914,94 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
 
     // MARK: Adjustments (inspector)
 
-    /// Slider moved: keep the parameters, re-render the preview debounced —
-    /// a slider drag fires dozens of times per second, the GPU render only
-    /// needs to land once the hand slows down.
+    /// Slider moved: keep the parameters and chase the preview.
     func setAdjustments(_ a: ImageAdjustments) {
         guard a != adjustments else { return }
         adjustments = a
-        previewTask?.cancel()
-        if a.isIdentity {
-            adjustedPreview = nil
+        refreshPreview()
+    }
+
+    /// Auto-Enhance toggle. On = compute the enhanced base once (the auto
+    /// filters are image-dependent, not slider values) and slide it under
+    /// the parametric stack; off = drop it. Un-baked either way.
+    func setAutoEnhance(_ on: Bool) {
+        if on {
+            guard autoEnhancedBase == nil else { return }
+            var img = CIImage(cgImage: baseImage)
+            let extent = img.extent
+            for filter in img.autoAdjustmentFilters(options: [.redEye: false]) {
+                filter.setValue(img, forKey: kCIInputImageKey)
+                img = filter.outputImage ?? img
+            }
+            guard let enhanced = ImagePipeline.ciContext.createCGImage(
+                img.cropped(to: extent), from: extent) else {
+                Toast.show("Could not enhance", symbol: "exclamationmark.triangle")
+                return
+            }
+            autoEnhancedBase = enhanced
+        } else {
+            guard autoEnhancedBase != nil else { return }
+            autoEnhancedBase = nil
+        }
+        refreshPreview()
+        onStateChange?()
+    }
+
+    /// Neutral sliders show the auto base (or nothing) directly; otherwise
+    /// kick a render.
+    private func refreshPreview() {
+        if adjustments.isIdentity {
+            adjustedPreview = autoEnhancedBase
             needsDisplay = true
             return
         }
-        previewTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 60_000_000)
-            guard let self, !Task.isCancelled else { return }
-            let base = baseImage
-            let pending = adjustments
-            let rendered = pending.apply(to: base)
-            guard pending == adjustments, base === baseImage else { return }
-            adjustedPreview = rendered
-            needsDisplay = true
+        renderPreview()
+    }
+
+    /// Throttled, off-main preview: render immediately unless one is already
+    /// in flight; when it lands, chase the latest values if they moved. A
+    /// debounce here means "nothing updates until the hand pauses" — wrong
+    /// for a live slider.
+    private func renderPreview() {
+        guard !previewRendering else { return }
+        previewRendering = true
+        let baseAtStart = baseImage
+        let source = autoEnhancedBase ?? baseImage
+        let pending = adjustments
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let rendered = pending.apply(to: source)
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.previewRendering = false
+                guard baseAtStart === self.baseImage else { return }   // baked/undone mid-render
+                if pending == self.adjustments, source === (self.autoEnhancedBase ?? self.baseImage) {
+                    self.adjustedPreview = rendered
+                    self.needsDisplay = true
+                } else {
+                    self.refreshPreview()
+                }
+            }
         }
     }
 
-    /// Fold pending adjustments into a new base image — one undoable step.
-    /// Runs on save/export and before any pixel-destructive op (crop, lift,
-    /// remove-bg), so those always work on what the user is seeing.
+    /// Fold the pending look (auto-enhance + sliders) into a new base image —
+    /// one undoable step. Runs on save/export and before any
+    /// pixel-destructive op (crop, lift, remove-bg), so those always work on
+    /// what the user is seeing.
     func bakeAdjustmentsIfNeeded() {
-        guard !adjustments.isIdentity else { return }
-        previewTask?.cancel()
-        guard let baked = adjustments.apply(to: baseImage) else {
+        guard hasPendingLook else { return }
+        // apply() returns its input untouched for neutral sliders, so an
+        // auto-enhance-only look bakes as exactly the enhanced base.
+        guard let baked = adjustments.apply(to: autoEnhancedBase ?? baseImage) else {
             adjustments = ImageAdjustments()
+            autoEnhancedBase = nil
             adjustedPreview = nil
             return
         }
         let pre = snapshot()
         baseImage = baked
         adjustments = ImageAdjustments()
+        autoEnhancedBase = nil
         adjustedPreview = nil
         redactRenderer.setBase(baked)
         patchCache.removeAll()
@@ -952,31 +1009,6 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         registerUndo(pre, name: "Adjust")
         needsDisplay = true
         onAdjustmentsBaked?()
-    }
-
-    /// One-shot Core Image auto-enhance, baked immediately as its own undo
-    /// step (it returns pre-configured filters, not slider values).
-    func autoEnhance() {
-        bakeAdjustmentsIfNeeded()
-        var img = CIImage(cgImage: baseImage)
-        let extent = img.extent
-        for filter in img.autoAdjustmentFilters(options: [.redEye: false]) {
-            filter.setValue(img, forKey: kCIInputImageKey)
-            img = filter.outputImage ?? img
-        }
-        guard let enhanced = ImagePipeline.ciContext.createCGImage(
-            img.cropped(to: extent), from: extent) else {
-            Toast.show("Could not enhance", symbol: "exclamationmark.triangle")
-            return
-        }
-        let pre = snapshot()
-        baseImage = enhanced
-        redactRenderer.setBase(enhanced)
-        patchCache.removeAll()
-        liftEngine.invalidate()
-        registerUndo(pre, name: "Auto-Enhance")
-        needsDisplay = true
-        Toast.show("Auto-enhanced", symbol: "wand.and.rays")
     }
 
     // MARK: Lift feather (options bar)
@@ -1624,13 +1656,11 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         baseTransparent = state.baseTransparent
         // Pending sliders are parametric — re-render them over the restored
         // base rather than silently discarding the user's dialled-in look.
-        if !adjustments.isIdentity {
-            previewTask?.cancel()
-            adjustedPreview = nil
-            let pending = adjustments
-            adjustments = ImageAdjustments()
-            setAdjustments(pending)
-        }
+        // The auto-enhance base is tied to the old pixels, so it drops when
+        // the base swaps.
+        if baseChanged { autoEnhancedBase = nil }
+        adjustedPreview = nil
+        if hasPendingLook { refreshPreview() }
         annotations = state.annotations
         selectedID = nil
         selectedIDs = []
