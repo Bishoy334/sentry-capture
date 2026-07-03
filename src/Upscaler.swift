@@ -16,8 +16,12 @@ enum Upscaler {
     private static let overlap = 16
 
     private static let loadedModel: MLModel? = {
-        guard let url = Bundle.main.url(forResource: "Upscaler", withExtension: "mlmodelc")
-        else { return nil }
+        // Env override lets the headless probe exercise this exact code
+        // against the app bundle's compiled model.
+        let url = ProcessInfo.processInfo.environment["SENTRY_UPSCALER_MODEL"]
+            .map { URL(fileURLWithPath: $0) }
+            ?? Bundle.main.url(forResource: "Upscaler", withExtension: "mlmodelc")
+        guard let url else { return nil }
         let config = MLModelConfiguration()
         config.computeUnits = .all   // ANE/GPU where available
         return try? MLModel(contentsOf: url, configuration: config)

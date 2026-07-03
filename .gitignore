@@ -2,3 +2,4 @@
 SentryCapture
 *.o
 .captures/
+scripts/realesr-general-x4v3.pth
