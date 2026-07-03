@@ -88,6 +88,17 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
     private var hoverInstances = IndexSet()
     private var hoverOverlay: CGImage?
 
+    /// Pending (un-baked) slider adjustments plus their preview render. The
+    /// preview swaps in for display only; baseImage stays clean until bake.
+    /// Redact patches keep deriving from the clean base during preview — a
+    /// visible mismatch while sliders move, corrected the moment bake runs.
+    private(set) var adjustments = ImageAdjustments()
+    private var adjustedPreview: CGImage?
+    private var previewTask: Task<Void, Never>?
+    /// Adjustments baked into the base (sliders snap back to neutral) — the
+    /// inspector re-syncs its controls.
+    var onAdjustmentsBaked: (() -> Void)?
+
     private(set) var cropActive = false
     private var cropRect: CGRect = .zero
 
@@ -242,7 +253,8 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         // CG clips the blit to dirtyRect — a 40000 px scrolling capture only
         // decodes the visible band.
         AnnotatorRender.blitFlipped(
-            baseImage, in: CGRect(origin: .zero, size: pointSize), ctx: ctx, canvasHeight: h)
+            adjustedPreview ?? baseImage,
+            in: CGRect(origin: .zero, size: pointSize), ctx: ctx, canvasHeight: h)
         // Redactions always sit directly above the base, below everything else,
         // regardless of array order (research B3).
         for a in annotations where a.kind == .redact {
@@ -827,8 +839,10 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
     private func liftAtPoint(_ p: CGPoint) {
         // Lift registers its own undo — a stale preGesture would double up
         // at mouseUp.
-        let pre = preGesture ?? snapshot()
         preGesture = nil
+        // Lift must cut the pixels the user is seeing, not the clean base.
+        bakeAdjustmentsIfNeeded()
+        let pre = snapshot()
         switch liftEngine.phase {
         case .idle, .analysing:
             liftEngine.prepare(base: baseImage)
@@ -868,6 +882,7 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
     /// version, undoable like a crop. Analysis runs async; a base swap
     /// mid-flight (crop/undo) drops the result.
     func removeBackground() {
+        bakeAdjustmentsIfNeeded()
         let base = baseImage
         Toast.show("Removing background…", symbol: "person.and.background.dotted")
         Task { @MainActor [weak self] in
@@ -888,6 +903,80 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
             onImageChanged?()
             onStateChange?()
         }
+    }
+
+    // MARK: Adjustments (inspector)
+
+    /// Slider moved: keep the parameters, re-render the preview debounced —
+    /// a slider drag fires dozens of times per second, the GPU render only
+    /// needs to land once the hand slows down.
+    func setAdjustments(_ a: ImageAdjustments) {
+        guard a != adjustments else { return }
+        adjustments = a
+        previewTask?.cancel()
+        if a.isIdentity {
+            adjustedPreview = nil
+            needsDisplay = true
+            return
+        }
+        previewTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 60_000_000)
+            guard let self, !Task.isCancelled else { return }
+            let base = baseImage
+            let pending = adjustments
+            let rendered = pending.apply(to: base)
+            guard pending == adjustments, base === baseImage else { return }
+            adjustedPreview = rendered
+            needsDisplay = true
+        }
+    }
+
+    /// Fold pending adjustments into a new base image — one undoable step.
+    /// Runs on save/export and before any pixel-destructive op (crop, lift,
+    /// remove-bg), so those always work on what the user is seeing.
+    func bakeAdjustmentsIfNeeded() {
+        guard !adjustments.isIdentity else { return }
+        previewTask?.cancel()
+        guard let baked = adjustments.apply(to: baseImage) else {
+            adjustments = ImageAdjustments()
+            adjustedPreview = nil
+            return
+        }
+        let pre = snapshot()
+        baseImage = baked
+        adjustments = ImageAdjustments()
+        adjustedPreview = nil
+        redactRenderer.setBase(baked)
+        patchCache.removeAll()
+        liftEngine.invalidate()
+        registerUndo(pre, name: "Adjust")
+        needsDisplay = true
+        onAdjustmentsBaked?()
+    }
+
+    /// One-shot Core Image auto-enhance, baked immediately as its own undo
+    /// step (it returns pre-configured filters, not slider values).
+    func autoEnhance() {
+        bakeAdjustmentsIfNeeded()
+        var img = CIImage(cgImage: baseImage)
+        let extent = img.extent
+        for filter in img.autoAdjustmentFilters(options: [.redEye: false]) {
+            filter.setValue(img, forKey: kCIInputImageKey)
+            img = filter.outputImage ?? img
+        }
+        guard let enhanced = ImagePipeline.ciContext.createCGImage(
+            img.cropped(to: extent), from: extent) else {
+            Toast.show("Could not enhance", symbol: "exclamationmark.triangle")
+            return
+        }
+        let pre = snapshot()
+        baseImage = enhanced
+        redactRenderer.setBase(enhanced)
+        patchCache.removeAll()
+        liftEngine.invalidate()
+        registerUndo(pre, name: "Auto-Enhance")
+        needsDisplay = true
+        Toast.show("Auto-enhanced", symbol: "wand.and.rays")
     }
 
     // MARK: Lift feather (options bar)
@@ -1295,6 +1384,9 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
             needsDisplay = true
         }
         if tool == .lift {
+            // Bake first: analysis must see the adjusted pixels, and baking
+            // later would invalidate the observation mid-aim.
+            bakeAdjustmentsIfNeeded()
             liftEngine.prepare(base: baseImage)   // warm up while the user aims
         } else if old == .lift {
             setHover(IndexSet())
@@ -1315,6 +1407,7 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
 
     func commitCrop() {
         guard cropActive else { return }
+        bakeAdjustmentsIfNeeded()
         let px = CGRect(
             x: cropRect.minX * imageScale,
             y: cropRect.minY * imageScale,
@@ -1529,6 +1622,15 @@ final class AnnotatorCanvas: NSView, NSTextViewDelegate {
         let baseChanged = state.base !== baseImage
         baseImage = state.base
         baseTransparent = state.baseTransparent
+        // Pending sliders are parametric — re-render them over the restored
+        // base rather than silently discarding the user's dialled-in look.
+        if !adjustments.isIdentity {
+            previewTask?.cancel()
+            adjustedPreview = nil
+            let pending = adjustments
+            adjustments = ImageAdjustments()
+            setAdjustments(pending)
+        }
         annotations = state.annotations
         selectedID = nil
         selectedIDs = []

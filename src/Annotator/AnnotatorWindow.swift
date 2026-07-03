@@ -79,6 +79,12 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     private var optionsBarHeight: NSLayoutConstraint!
     private let sidebarStack = NSStackView()
     private var sidebarWidth: NSLayoutConstraint!
+    private let inspectorStack = NSStackView()
+    private var inspectorWidth: NSLayoutConstraint!
+    private var adjustButton: NSButton?
+    private var adjustActive = false
+    private var adjustSliders: [NSSlider] = []
+    private var adjustResets: [NSButton] = []
     private var undoButton: NSButton!
     private var redoButton: NSButton!
     private let zoomLabel = NSTextField(labelWithString: "100%")
@@ -159,6 +165,10 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             // out so the whole document stays in view.
             self?.zoomOutToFitIfNeeded()
         }
+        canvas.onAdjustmentsBaked = { [weak self] in
+            self?.syncAdjustInspector()
+            self?.refreshChrome()
+        }
 
         sizeWindowToImage()
         refreshImageMeta()
@@ -193,6 +203,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         let toolbar = buildToolbar()
         let optionsBar = buildOptionsBar()
         let sidebar = buildBackgroundSidebar()
+        let inspector = buildAdjustInspector()
         let footer = buildFooter()
 
         backdrop.addSubview(canvas)
@@ -216,11 +227,12 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             MainActor.assumeIsolated { self?.refreshZoomLabel() }
         }
 
-        for v in [toolbar, optionsBar, sidebar, scrollView, footer] {
+        for v in [toolbar, optionsBar, sidebar, inspector, scrollView, footer] {
             v.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(v)
         }
         sidebarWidth = sidebar.widthAnchor.constraint(equalToConstant: 0)
+        inspectorWidth = inspector.widthAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
             toolbar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             toolbar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
@@ -237,8 +249,14 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             sidebar.topAnchor.constraint(equalTo: optionsBar.bottomAnchor),
             sidebar.bottomAnchor.constraint(equalTo: footer.topAnchor),
 
+            // Adjustments inspector — right-hand column, zero width until toggled.
+            inspectorWidth,
+            inspector.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            inspector.topAnchor.constraint(equalTo: optionsBar.bottomAnchor),
+            inspector.bottomAnchor.constraint(equalTo: footer.topAnchor),
+
             scrollView.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: inspector.leadingAnchor),
             scrollView.topAnchor.constraint(equalTo: optionsBar.bottomAnchor),
             scrollView.bottomAnchor.constraint(equalTo: footer.topAnchor),
 
@@ -300,6 +318,13 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             action: #selector(backgroundTapped))
         stack.insertArrangedSubview(background, at: 3)
         backgroundButton = background
+
+        // Adjustments inspector toggle — the right-hand column counterpart.
+        let adjust = toolbarIconButton(
+            symbol: "slider.horizontal.3", tooltip: "Adjust",
+            action: #selector(adjustTapped))
+        stack.insertArrangedSubview(adjust, at: 4)
+        adjustButton = adjust
 
         // Sticker stamps: a one-tap emoji menu, placed as movable annotations.
         let sticker = toolbarIconButton(
@@ -492,6 +517,16 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
                 ? .white
                 : (active ? HUDStyle.accent : .secondaryLabelColor)
         }
+        if let adjustButton {
+            // Amber hints that un-baked adjustments are live even with the
+            // panel closed.
+            let active = adjustActive || !canvas.adjustments.isIdentity
+            adjustButton.layer?.backgroundColor =
+                adjustActive ? HUDStyle.accentDeep.cgColor : nil
+            adjustButton.contentTintColor = adjustActive
+                ? .white
+                : (active ? HUDStyle.accent : .secondaryLabelColor)
+        }
         rebuildOptionsBar()
     }
 
@@ -509,6 +544,135 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         canvas.layer?.cornerRadius = backgroundStyle.isVisible ? backgroundStyle.cornerRadius : 0
         canvas.layer?.masksToBounds = backgroundStyle.isVisible
         backdrop.needsDisplay = true
+    }
+
+    /// Tracked-uppercase eyebrow, per the Sentry brand's section heads.
+    private func eyebrow(_ text: String) -> NSTextField {
+        let label = NSTextField(labelWithString: "")
+        label.attributedStringValue = NSAttributedString(string: text, attributes: [
+            .font: NSFont.systemFont(ofSize: 10, weight: .semibold),
+            .foregroundColor: NSColor.tertiaryLabelColor,
+            .kern: 0.8,
+        ])
+        return label
+    }
+
+    /// The adjustments workspace: a right column mirroring the background
+    /// sidebar. Built once (controls update in place — rebuilding mid-drag
+    /// would break a live slider); scrolls when the window is short.
+    private func buildAdjustInspector() -> NSView {
+        let container = NSView()
+        container.clipsToBounds = true
+        let scroll = NSScrollView()
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        let doc = AnnotatorFlippedView()
+        doc.translatesAutoresizingMaskIntoConstraints = false
+        scroll.documentView = doc
+
+        inspectorStack.orientation = .vertical
+        inspectorStack.alignment = .leading
+        inspectorStack.spacing = 8
+        inspectorStack.translatesAutoresizingMaskIntoConstraints = false
+        doc.addSubview(inspectorStack)
+
+        let edge = hairline()
+        container.addSubview(scroll)
+        container.addSubview(edge)
+        NSLayoutConstraint.activate([
+            scroll.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: container.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            doc.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
+            doc.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor),
+            doc.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
+            inspectorStack.leadingAnchor.constraint(equalTo: doc.leadingAnchor, constant: 14),
+            inspectorStack.topAnchor.constraint(equalTo: doc.topAnchor, constant: 14),
+            inspectorStack.widthAnchor.constraint(equalToConstant: 162),
+            doc.bottomAnchor.constraint(equalTo: inspectorStack.bottomAnchor, constant: 14),
+            edge.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            edge.topAnchor.constraint(equalTo: container.topAnchor),
+            edge.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            edge.widthAnchor.constraint(equalToConstant: 1),
+        ])
+        populateAdjustInspector()
+        return container
+    }
+
+    private func populateAdjustInspector() {
+        func action(_ title: String, _ selector: Selector) -> NSButton {
+            let button = NSButton(title: title, target: self, action: selector)
+            button.controlSize = .small
+            button.bezelStyle = .accessoryBarAction
+            button.font = .systemFont(ofSize: 11)
+            return button
+        }
+        let header = NSStackView(views: [
+            action("Auto-Enhance", #selector(autoEnhanceTapped)),
+            action("Reset", #selector(adjustResetAllTapped)),
+        ])
+        header.orientation = .horizontal
+        header.spacing = 6
+        inspectorStack.addArrangedSubview(header)
+
+        var lastGroup = ""
+        for p in AdjustParam.allCases {
+            if p.group != lastGroup {
+                lastGroup = p.group
+                let head = eyebrow(p.group)
+                inspectorStack.addArrangedSubview(head)
+                inspectorStack.setCustomSpacing(4, after: head)
+            }
+            let label = NSTextField(labelWithString: p.label)
+            label.font = .systemFont(ofSize: 11)
+            label.textColor = .secondaryLabelColor
+            let reset = NSButton()
+            reset.isBordered = false
+            reset.setButtonType(.momentaryChange)
+            reset.image = NSImage(
+                systemSymbolName: "arrow.counterclockwise", accessibilityDescription: "Reset")?
+                .withSymbolConfiguration(.init(pointSize: 8, weight: .semibold))
+            reset.contentTintColor = .secondaryLabelColor
+            reset.toolTip = "Reset \(p.label.lowercased())"
+            reset.tag = p.rawValue
+            reset.target = self
+            reset.action = #selector(adjustResetTapped(_:))
+            reset.isEnabled = false
+            let spacer = NSView()
+            spacer.setContentHuggingPriority(.init(1), for: .horizontal)
+            let row = NSStackView(views: [label, spacer, reset])
+            row.orientation = .horizontal
+            row.translatesAutoresizingMaskIntoConstraints = false
+            row.widthAnchor.constraint(equalToConstant: 162).isActive = true
+
+            let slider = NSSlider(
+                value: p.range.neutral, minValue: p.range.min, maxValue: p.range.max,
+                target: self, action: #selector(adjustChanged(_:)))
+            slider.controlSize = .small
+            slider.tag = p.rawValue
+            slider.translatesAutoresizingMaskIntoConstraints = false
+            slider.widthAnchor.constraint(equalToConstant: 162).isActive = true
+
+            inspectorStack.addArrangedSubview(row)
+            inspectorStack.setCustomSpacing(0, after: row)
+            inspectorStack.addArrangedSubview(slider)
+            adjustSliders.append(slider)
+            adjustResets.append(reset)
+        }
+    }
+
+    /// Push the canvas's adjustment values back into the controls (panel
+    /// open, bake, reset).
+    private func syncAdjustInspector() {
+        let a = canvas.adjustments
+        for p in AdjustParam.allCases {
+            adjustSliders[p.rawValue].doubleValue = Double(a[p])
+            adjustResets[p.rawValue].isEnabled =
+                abs(a[p] - CGFloat(p.range.neutral)) >= 0.0001
+        }
     }
 
     /// The background workspace: a left column, not another toolbar row —
@@ -983,6 +1147,40 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         window.makeFirstResponder(canvas)
     }
 
+    @objc private func adjustTapped() {
+        adjustActive.toggle()
+        if adjustActive { syncAdjustInspector() }
+        inspectorWidth.constant = adjustActive ? 190 : 0
+        refreshChrome()
+    }
+
+    @objc private func adjustChanged(_ sender: NSSlider) {
+        guard let p = AdjustParam(rawValue: sender.tag) else { return }
+        var a = canvas.adjustments
+        a[p] = CGFloat(sender.doubleValue)
+        canvas.setAdjustments(a)
+        adjustResets[sender.tag].isEnabled =
+            abs(a[p] - CGFloat(p.range.neutral)) >= 0.0001
+    }
+
+    @objc private func adjustResetTapped(_ sender: NSButton) {
+        guard let p = AdjustParam(rawValue: sender.tag) else { return }
+        var a = canvas.adjustments
+        a[p] = CGFloat(p.range.neutral)
+        canvas.setAdjustments(a)
+        syncAdjustInspector()
+    }
+
+    @objc private func adjustResetAllTapped() {
+        canvas.setAdjustments(ImageAdjustments())
+        syncAdjustInspector()
+    }
+
+    @objc private func autoEnhanceTapped() {
+        canvas.autoEnhance()
+        window.makeFirstResponder(canvas)
+    }
+
     @objc private func removeBackgroundTapped() {
         canvas.removeBackground()
         window.makeFirstResponder(canvas)
@@ -1064,6 +1262,8 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
 
     private func exportStill() -> StillCapture? {
         canvas.commitTextEditingIfAny()
+        // Invariant 3: adjustments preview live but bake on export/save.
+        canvas.bakeAdjustmentsIfNeeded()
         guard let flattened = canvas.flattened() else {
             Toast.show("Could not flatten image", symbol: "exclamationmark.triangle")
             return nil
@@ -1231,6 +1431,11 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     private func refreshZoomLabel() {
         zoomLabel.stringValue = "\(Int((scrollView.magnification * 100).rounded()))%"
     }
+}
+
+/// Scroll-view document that lays out top-down like the rest of the editor.
+private final class AnnotatorFlippedView: NSView {
+    override var isFlipped: Bool { true }
 }
 
 // MARK: - Object drag-out
