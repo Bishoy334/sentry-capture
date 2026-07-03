@@ -101,12 +101,17 @@ private final class VideoEditorView: NSView {
     private let player: AVPlayer
     private let playerView = AVPlayerView()
     private let timeline = VideoTimelineView()
+    private let cropOverlay = VideoCropOverlay()
+    /// Natural size with the preferred transform applied — the space crop
+    /// coordinates live in.
+    private var orientedVideoSize: CGSize = .zero
 
     private let infoLabel = NSTextField(labelWithString: "")
     private var speedPopup: NSPopUpButton!
     private var sizePopup: NSPopUpButton!
     private var volumeSlider: NSSlider!
     private var frameButton: NSButton!
+    private var cropButton: NSButton!
     private var gifButton: NSButton!
     private var copyButton: NSButton!
     private var saveButton: NSButton!
@@ -168,6 +173,11 @@ private final class VideoEditorView: NSView {
         }
         addSubview(timeline)
 
+        cropOverlay.isHidden = true
+        cropOverlay.translatesAutoresizingMaskIntoConstraints = false
+        cropOverlay.onChanged = { [weak self] in self?.refreshInfo() }
+        addSubview(cropOverlay)
+
         infoLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         infoLabel.textColor = .secondaryLabelColor
         infoLabel.lineBreakMode = .byTruncatingTail
@@ -203,6 +213,13 @@ private final class VideoEditorView: NSView {
         frameButton.bezelStyle = .rounded
         frameButton.toolTip = "Open the current frame in the image editor"
 
+        cropButton = NSButton(
+            image: NSImage(systemSymbolName: "crop", accessibilityDescription: "Crop") ?? NSImage(),
+            target: self, action: #selector(cropTapped))
+        cropButton.bezelStyle = .rounded
+        cropButton.setButtonType(.pushOnPushOff)
+        cropButton.toolTip = "Crop the video (double-click the frame to reset)"
+
         gifButton = NSButton(title: "GIF…", target: self, action: #selector(gifTapped))
         gifButton.bezelStyle = .rounded
         gifButton.toolTip = "Export the trimmed clip as a GIF"
@@ -226,7 +243,7 @@ private final class VideoEditorView: NSView {
         spacer.setContentHuggingPriority(.init(1), for: .horizontal)
         let bar = NSStackView(views: [
             infoLabel, spacer, speedPopup, sizePopup, speaker, volumeSlider,
-            spinner, frameButton, gifButton, copyButton, saveButton,
+            spinner, frameButton, cropButton, gifButton, copyButton, saveButton,
         ])
         bar.orientation = .horizontal
         bar.alignment = .centerY
@@ -242,6 +259,10 @@ private final class VideoEditorView: NSView {
             playerView.leadingAnchor.constraint(equalTo: leadingAnchor),
             playerView.trailingAnchor.constraint(equalTo: trailingAnchor),
             playerView.bottomAnchor.constraint(equalTo: timeline.topAnchor),
+            cropOverlay.topAnchor.constraint(equalTo: playerView.topAnchor),
+            cropOverlay.leadingAnchor.constraint(equalTo: playerView.leadingAnchor),
+            cropOverlay.trailingAnchor.constraint(equalTo: playerView.trailingAnchor),
+            cropOverlay.bottomAnchor.constraint(equalTo: playerView.bottomAnchor),
             timeline.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
             timeline.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
             timeline.bottomAnchor.constraint(equalTo: bar.topAnchor),
@@ -257,6 +278,13 @@ private final class VideoEditorView: NSView {
         Task { @MainActor in
             durationSeconds = (try? await asset.load(.duration))?.seconds ?? 0
             if !durationSeconds.isFinite { durationSeconds = 0 }
+            if let track = try? await asset.loadTracks(withMediaType: .video).first,
+               let natural = try? await track.load(.naturalSize),
+               let transform = try? await track.load(.preferredTransform) {
+                let oriented = natural.applying(transform)
+                orientedVideoSize = CGSize(width: abs(oriented.width), height: abs(oriented.height))
+                cropOverlay.videoSize = orientedVideoSize
+            }
             // Handles can't cross closer than half a second of footage.
             if durationSeconds > 0 {
                 timeline.minGap = min(0.5 / durationSeconds, 0.5)
@@ -346,6 +374,9 @@ private final class VideoEditorView: NSView {
         if trimRange.duration.seconds < durationSeconds - 0.05 || speed != 1 {
             text += " of \(Self.timeString(durationSeconds))"
         }
+        if let crop = currentCropPx() {
+            text += " · crop \(Int(crop.width))×\(Int(crop.height))"
+        }
         infoLabel.stringValue = text
 
         // The byte estimate needs a full session — debounce and fill in behind.
@@ -362,6 +393,7 @@ private final class VideoEditorView: NSView {
                   let session = AVAssetExportSession(asset: composition, presetName: preset)
             else { return }
             session.audioMix = audioMix
+            session.videoComposition = try? await self.makeVideoComposition(for: composition)
             session.outputFileType = .mp4
             guard let bytes = try? await session.estimatedOutputFileLengthInBytes,
                   bytes > 0, !Task.isCancelled else { return }
@@ -417,6 +449,46 @@ private final class VideoEditorView: NSView {
         return (composition, mix)
     }
 
+    /// Crop rect in oriented video pixels, nil when (near) full frame.
+    /// H.264 wants even dimensions — floor to the even pixel.
+    private func currentCropPx() -> CGRect? {
+        let c = cropOverlay.crop
+        guard orientedVideoSize.width > 0 else { return nil }
+        if c.minX < 0.005, c.minY < 0.005, c.maxX > 0.995, c.maxY > 0.995 { return nil }
+        let w = orientedVideoSize.width
+        let h = orientedVideoSize.height
+        var rect = CGRect(
+            x: (c.minX * w).rounded(.down), y: (c.minY * h).rounded(.down),
+            width: c.width * w, height: c.height * h)
+            .intersection(CGRect(origin: .zero, size: orientedVideoSize))
+        rect.size.width = max((rect.width / 2).rounded(.down) * 2, 2)
+        rect.size.height = max((rect.height / 2).rounded(.down) * 2, 2)
+        return rect
+    }
+
+    /// Research §7b: there is no cropRect — cropping is a smaller renderSize
+    /// plus a translation on the layer instruction (after the orientation
+    /// transform, or the frame lands outside the render box).
+    private func makeVideoComposition(
+        for composition: AVMutableComposition
+    ) async throws -> AVMutableVideoComposition? {
+        guard let cropPx = currentCropPx(),
+              let track = try await composition.loadTracks(withMediaType: .video).first
+        else { return nil }
+        let vc = AVMutableVideoComposition()
+        vc.renderSize = cropPx.size
+        vc.frameDuration = CMTime(value: 1, timescale: 60)
+        let instruction = AVMutableVideoCompositionInstruction()
+        instruction.timeRange = CMTimeRange(start: .zero, duration: composition.duration)
+        let layer = AVMutableVideoCompositionLayerInstruction(assetTrack: track)
+        let transform = try await track.load(.preferredTransform)
+            .concatenating(CGAffineTransform(translationX: -cropPx.minX, y: -cropPx.minY))
+        layer.setTransform(transform, at: .zero)
+        instruction.layerInstructions = [layer]
+        vc.instructions = [instruction]
+        return vc
+    }
+
     private func export(preset: String) async throws -> URL {
         let (composition, mix) = try await makeComposition(
             range: trimRange, speed: speed, muted: volumeSlider.doubleValue == 0)
@@ -424,6 +496,7 @@ private final class VideoEditorView: NSView {
             throw NSError(domain: "VideoEditor", code: 2, userInfo: [
                 NSLocalizedDescriptionKey: "Export preset unavailable"])
         }
+        session.videoComposition = try await makeVideoComposition(for: composition)
         session.audioMix = mix
         // Sped-up audio keeps its pitch instead of chipmunking.
         session.audioTimePitchAlgorithm = .spectral
@@ -498,6 +571,12 @@ private final class VideoEditorView: NSView {
         }
     }
 
+    @objc private func cropTapped() {
+        cropOverlay.isHidden = cropButton.state == .off
+        if !cropOverlay.isHidden { player.pause() }
+        refreshInfo()
+    }
+
     /// Phase F frame grab: the paused frame opens in the annotator as a
     /// still (unsaved — its Save creates a record of its own). Exact-frame
     /// needs both tolerances zero or the generator snaps to a keyframe.
@@ -562,6 +641,108 @@ private final class VideoEditorView: NSView {
                 Toast.show("GIF saved", symbol: "photo.stack")
             }
         }
+    }
+}
+
+// MARK: - Crop overlay
+
+/// Crop handles floating over the video preview — annotator crop UX at
+/// video scale. Crop state is normalised (0…1 of the oriented frame) so a
+/// window resize costs nothing; double-click resets to full frame.
+@MainActor
+private final class VideoCropOverlay: NSView {
+    /// Oriented video pixel size — defines the aspect-fit box.
+    var videoSize: CGSize = .zero {
+        didSet { needsDisplay = true }
+    }
+    /// Normalised (0…1, top-left origin) crop within the video frame.
+    private(set) var crop = CGRect(x: 0, y: 0, width: 1, height: 1)
+    var onChanged: (() -> Void)?
+
+    private enum Drag { case move(last: CGPoint), resize(handle: AnnotatorHandle) }
+    private var drag: Drag?
+
+    override var isFlipped: Bool { true }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    /// Where the video actually draws (aspect-fit inside our bounds).
+    private var videoRect: CGRect {
+        guard videoSize.width > 0, videoSize.height > 0 else { return bounds }
+        let f = min(bounds.width / videoSize.width, bounds.height / videoSize.height)
+        let w = videoSize.width * f
+        let h = videoSize.height * f
+        return CGRect(x: bounds.midX - w / 2, y: bounds.midY - h / 2, width: w, height: h)
+    }
+
+    private var cropViewRect: CGRect {
+        let v = videoRect
+        return CGRect(
+            x: v.minX + crop.minX * v.width, y: v.minY + crop.minY * v.height,
+            width: crop.width * v.width, height: crop.height * v.height)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        let v = videoRect
+        let r = cropViewRect
+        ctx.setFillColor(NSColor.black.withAlphaComponent(0.55).cgColor)
+        ctx.addRect(v)
+        ctx.addRect(r)
+        ctx.fillPath(using: .evenOdd)
+        ctx.setStrokeColor(NSColor.white.cgColor)
+        ctx.setLineWidth(1)
+        ctx.stroke(r)
+        for (_, p) in AnnotatorHit.rectHandles(r) {
+            let square = CGRect(x: p.x - 4, y: p.y - 4, width: 8, height: 8)
+            ctx.setFillColor(NSColor.white.cgColor)
+            ctx.setStrokeColor(HUDStyle.accent.cgColor)
+            ctx.fill(square)
+            ctx.stroke(square)
+        }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        if event.clickCount == 2 {
+            crop = CGRect(x: 0, y: 0, width: 1, height: 1)
+            needsDisplay = true
+            onChanged?()
+            return
+        }
+        if let handle = AnnotatorHit.handleHit(
+            AnnotatorHit.rectHandles(cropViewRect), at: p, slop: 12) {
+            drag = .resize(handle: handle)
+        } else if cropViewRect.contains(p) {
+            drag = .move(last: p)
+        }
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let drag else { return }
+        let p = convert(event.locationInWindow, from: nil)
+        let v = videoRect
+        guard v.width > 0, v.height > 0 else { return }
+        switch drag {
+        case .resize(let handle):
+            let resized = AnnotatorHit.resize(cropViewRect, handle: handle, to: p)
+                .intersection(v)
+            guard resized.width > 24, resized.height > 24 else { return }
+            crop = CGRect(
+                x: (resized.minX - v.minX) / v.width, y: (resized.minY - v.minY) / v.height,
+                width: resized.width / v.width, height: resized.height / v.height)
+        case .move(let last):
+            let dx = (p.x - last.x) / v.width
+            let dy = (p.y - last.y) / v.height
+            crop.origin.x = min(max(crop.minX + dx, 0), 1 - crop.width)
+            crop.origin.y = min(max(crop.minY + dy, 0), 1 - crop.height)
+            self.drag = .move(last: p)
+        }
+        needsDisplay = true
+        onChanged?()
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        drag = nil
     }
 }
 
