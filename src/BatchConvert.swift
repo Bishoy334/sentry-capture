@@ -150,7 +150,7 @@ private final class BatchConvertView: NSView {
         convertButton = NSButton(title: "Convert All", target: self, action: #selector(convertTapped))
         convertButton.bezelStyle = .rounded
         convertButton.keyEquivalent = "\r"
-        convertButton.bezelColor = .controlAccentColor
+        convertButton.bezelColor = HUDStyle.accentDeep
         let spacer = NSView()
         spacer.setContentHuggingPriority(.init(1), for: .horizontal)
         let footer = NSStackView(views: [summaryLabel, spacer, clearButton, convertButton])

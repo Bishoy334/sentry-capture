@@ -130,7 +130,8 @@ private final class ScrollingSession {
 
         let done = NSButton(title: "Done", target: self, action: #selector(doneTapped))
         done.bezelStyle = .rounded
-        done.keyEquivalent = "\r" // default button — accent fill
+        done.keyEquivalent = "\r"
+        done.bezelColor = HUDStyle.accentDeep   // brand CTA, not system blue
 
         let stack = NSStackView(views: [status, autoSwitch, autoLabel, cancel, done])
         stack.orientation = .horizontal

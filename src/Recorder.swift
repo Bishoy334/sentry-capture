@@ -1005,7 +1005,7 @@ private final class RecorderControlStrip: NSPanel {
         recordButton.bezelStyle = .rounded
         recordButton.controlSize = .regular
         recordButton.keyEquivalent = "\r"
-        recordButton.bezelColor = .controlAccentColor
+        recordButton.bezelColor = HUDStyle.accentDeep
 
         let stack = NSStackView(views: [
             sizeLabel, hairline(),

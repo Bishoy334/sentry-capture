@@ -1220,6 +1220,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             } ?? 0
             let apply = NSButton(title: "Apply", target: self, action: #selector(applyCropTapped))
             apply.keyEquivalent = "\r"
+            apply.bezelColor = HUDStyle.accentDeep
             apply.controlSize = .small
             let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelCropTapped))
             cancel.controlSize = .small

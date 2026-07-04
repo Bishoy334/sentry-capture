@@ -310,7 +310,7 @@ final class ExportSheetController: NSObject, NSTextFieldDelegate {
         cancel.keyEquivalent = "\u{1b}"
         let export = NSButton(title: "Export", target: self, action: #selector(exportTapped))
         export.keyEquivalent = "\r"
-        export.bezelColor = .controlAccentColor
+        export.bezelColor = HUDStyle.accentDeep
         let buttons = NSStackView(views: [cancel, export])
         buttons.orientation = .horizontal
         buttons.spacing = 8
