@@ -110,6 +110,7 @@ enum SentryRegistry {
                 "fullscreen": .captureFullscreen, "scrolling": .scrollingCapture,
                 "ocr": .copyText, "pin": .pinArea,
                 "record": .recordVideo, "gif": .recordGIF,
+                "all": .allInOne,
             ]
             guard let mode = query["mode"], let action = modes[mode] else {
                 NSLog("sentry-capture url: unknown capture mode")

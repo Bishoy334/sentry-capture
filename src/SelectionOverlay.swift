@@ -1041,7 +1041,7 @@ private final class AllInOneStrip: NSPanel, NSTextFieldDelegate {
         let stack = NSStackView()
         stack.orientation = .horizontal
         stack.spacing = 2
-        stack.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)
+        stack.edgeInsets = NSEdgeInsets(top: 3, left: 10, bottom: 7, right: 10)
 
         // Exact-size entry: type a width/height, Return commits.
         widthField = sizeField(placeholder: "W")
@@ -1102,7 +1102,7 @@ private final class AllInOneStrip: NSPanel, NSTextFieldDelegate {
         let column = NSStackView(views: [hintLabel, stack])
         column.orientation = .vertical
         column.alignment = .centerX
-        column.spacing = 2
+        column.spacing = 3
         column.edgeInsets = NSEdgeInsets(top: 7, left: 0, bottom: 0, right: 0)
 
         let card = HUDStyle.card()
@@ -1189,7 +1189,7 @@ private final class AllInOneStrip: NSPanel, NSTextFieldDelegate {
         button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)?
             .withSymbolConfiguration(.init(pointSize: 15, weight: .medium))
         button.title = label
-        button.font = .systemFont(ofSize: 9.5, weight: .medium)
+        button.font = .systemFont(ofSize: 10.5, weight: .medium)
         button.alignment = .center   // imageAbove keeps natural (left) title alignment otherwise
         button.contentTintColor = .white
         button.toolTip = label
@@ -1197,8 +1197,8 @@ private final class AllInOneStrip: NSPanel, NSTextFieldDelegate {
         button.target = self
         button.action = #selector(buttonTapped(_:))
         button.translatesAutoresizingMaskIntoConstraints = false
-        button.widthAnchor.constraint(equalToConstant: 62).isActive = true
-        button.heightAnchor.constraint(equalToConstant: 44).isActive = true
+        button.widthAnchor.constraint(equalToConstant: 58).isActive = true
+        button.heightAnchor.constraint(equalToConstant: 46).isActive = true
         return button
     }
 
