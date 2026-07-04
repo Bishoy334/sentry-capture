@@ -52,16 +52,41 @@ enum SentryRegistry {
     }
 
     /// Our own capability file — written at launch so the registry pattern
-    /// is self-documenting from the first app.
+    /// is self-documenting from the first app. `commands` advertises the
+    /// fixed URL-scheme action set to the Sentry Launcher (see SENTRY_SCHEMA.md).
     static func advertiseSelf() {
         let dir = appsDirectory
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        func command(_ id: String, _ title: String, _ symbol: String, _ url: String,
+                     mutating: Bool = true) -> [String: Any] {
+            ["id": id, "title": title, "symbol": symbol, "url": url, "mutating": mutating]
+        }
         let capability: [String: Any] = [
             "app": "sentry.capture",
             "name": "Sentry Capture",
             "symbol": "camera.viewfinder",
             "urlScheme": "sentry-capture",
             "accepts": [],
+            "commands": [
+                command("capture-area", "Capture Area", "viewfinder",
+                        "sentry-capture://capture?mode=area"),
+                command("capture-window", "Capture Window", "macwindow",
+                        "sentry-capture://capture?mode=window"),
+                command("capture-fullscreen", "Capture Fullscreen", "rectangle.dashed",
+                        "sentry-capture://capture?mode=fullscreen"),
+                command("scrolling-capture", "Scrolling Capture", "arrow.up.and.down.square",
+                        "sentry-capture://capture?mode=scrolling"),
+                command("copy-text-ocr", "Copy Text (OCR)", "text.viewfinder",
+                        "sentry-capture://capture?mode=ocr"),
+                command("pin-area", "Pin Area", "pin",
+                        "sentry-capture://capture?mode=pin"),
+                command("record-video", "Record Video", "record.circle",
+                        "sentry-capture://capture?mode=record"),
+                command("record-gif", "Record GIF", "photo.stack",
+                        "sentry-capture://capture?mode=gif"),
+                command("settings", "Sentry Capture Settings", "gearshape",
+                        "sentry-capture://settings", mutating: false),
+            ],
         ]
         guard let data = try? JSONSerialization.data(
             withJSONObject: capability, options: [.prettyPrinted, .sortedKeys]) else { return }

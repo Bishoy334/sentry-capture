@@ -265,7 +265,10 @@ private final class ColourPickerView: NSView {
         let old = mouseLocal
         mouseLocal = localPoint(event)
         for p in [old, mouseLocal] {
-            setNeedsDisplay(NSRect(x: p.x - 170, y: p.y - 170, width: 340, height: 340))
+            // Must cover the loupe's full chrome on whichever side it flips
+            // to: 24pt offset + 130pt loupe + the swatch pill hanging ~27pt
+            // below (~181pt total). Anything less leaves trails of the pill.
+            setNeedsDisplay(NSRect(x: p.x - 210, y: p.y - 210, width: 420, height: 420))
         }
     }
 

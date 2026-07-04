@@ -104,6 +104,31 @@ record = the record already being on disk + opening
 app resolves the id under `~/Sentry/` and reads the manifest itself — the URL
 carries identifiers, never payloads.
 
+### Commands (launcher integration)
+
+A capability file MAY advertise `commands` — the app's fixed URL-scheme action
+set. The Sentry Launcher surfaces each as a first-class palette command, and
+(round F) exposes them to the local LLM as tools:
+
+```jsonc
+"commands": [
+  {
+    "id": "capture-area",                          // stable, kebab-case
+    "title": "Capture Area",                       // what the palette shows
+    "symbol": "viewfinder",                        // SF Symbol
+    "url": "sentry-capture://capture?mode=area",   // the whole invocation
+    "mutating": true,                              // writes/records/toggles →
+                                                   // LLM requires confirmation
+    "description": null                            // optional, for LLM tool docs
+  }
+]
+```
+
+Rules: `url` must target the app's own registered scheme with a fixed action —
+consumers open it verbatim and never construct URLs beyond appending nothing.
+Commands are fire-and-forget (no-view); structured responses wait for the
+local command service.
+
 ## Transports (layered, cheapest first)
 
 1. **The folder is the API.** Watch `~/Sentry/captures/` with FSEvents; a new
