@@ -152,6 +152,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// Runs the strip self-timer countdown (if any) before a live/staged action
+    /// such as recording or scrolling capture, so the Timer control honours
+    /// those modes instead of silently starting immediately.
+    private func afterTimer(_ seconds: Int, _ run: @escaping @MainActor () -> Void) {
+        guard seconds > 0 else { run(); return }
+        Task { @MainActor in
+            for remaining in stride(from: seconds, through: 1, by: -1) {
+                Toast.show("Starting in \(remaining)…", symbol: "timer", duration: 0.9)
+                try? await Task.sleep(for: .seconds(1))
+            }
+            run()
+        }
+    }
+
     // MARK: Dispatch
 
     func dispatch(_ action: HotkeyAction) {
@@ -186,11 +200,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 guard let selection, let chosen = selection.chosenAction else { return }
                 switch chosen {
                 case .recordVideo:
-                    RecordingController.shared.start(selection: selection, asGIF: false)
+                    self.afterTimer(selection.timerSeconds) {
+                        RecordingController.shared.start(selection: selection, asGIF: false)
+                    }
                 case .recordGIF:
-                    RecordingController.shared.start(selection: selection, asGIF: true)
+                    self.afterTimer(selection.timerSeconds) {
+                        RecordingController.shared.start(selection: selection, asGIF: true)
+                    }
                 case .scrollingCapture:
-                    ScrollingCaptureController.shared.begin(selection: selection)
+                    self.afterTimer(selection.timerSeconds) {
+                        ScrollingCaptureController.shared.begin(selection: selection)
+                    }
                 case .copyText:
                     self.captureAfterTimer(selection) {
                         OutputRouter.shared.copyText(from: $0)

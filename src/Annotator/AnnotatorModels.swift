@@ -36,7 +36,7 @@ enum AnnotatorTool: CaseIterable {
         case .lift: return "wand.and.stars"
         case .magnifier: return "plus.magnifyingglass"
         case .heal: return "bandage"
-        case .clone: return "scope"
+        case .clone: return "square.on.square.dashed"
         case .arrow: return "arrow.up.right"
         case .line: return "line.diagonal"
         case .rect: return "rectangle"

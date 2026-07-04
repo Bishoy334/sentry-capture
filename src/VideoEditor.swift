@@ -76,6 +76,27 @@ final class VideoEditorController: NSObject, NSWindowDelegate {
             AppActivation.acquire()
         }
         w.makeKeyAndOrderFront(nil)
+        w.makeFirstResponder(editor)
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard let editor = editorView, editor.hasEdits else { return true }
+        let alert = NSAlert()
+        alert.messageText = "Save changes to this recording?"
+        alert.informativeText =
+            "Your trim, speed, crop and annotation edits will be lost if you don’t save them."
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Don’t Save")
+        alert.addButton(withTitle: "Cancel")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:   // Save (then close via onSaved)
+            editor.requestSave()
+            return false
+        case .alertSecondButtonReturn:  // Don't Save — discard
+            return true
+        default:                        // Cancel — stay open
+            return false
+        }
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -110,9 +131,14 @@ private final class VideoEditorView: NSView {
     private var orientedVideoSize: CGSize = .zero
 
     private let infoLabel = NSTextField(labelWithString: "")
+    private let timeLabel = NSTextField(labelWithString: "0:00 / 0:00")
+    private var playButton: NSButton!
     private var speedPopup: NSPopUpButton!
     private var sizePopup: NSPopUpButton!
+    private var muteButton: NSButton!
     private var volumeSlider: NSSlider!
+    /// Last non-zero volume, restored when the speaker button un-mutes.
+    private var lastVolume: Float = 1
     private var frameButton: NSButton!
     private var cropButton: NSButton!
     private var annotateButton: NSButton!
@@ -125,6 +151,7 @@ private final class VideoEditorView: NSView {
 
     private var durationSeconds: Double = 0
     private var timeObserver: Any?
+    private var rateObservation: NSKeyValueObservation?
     private var estimateTask: Task<Void, Never>?
     private var exporting = false
 
@@ -151,8 +178,21 @@ private final class VideoEditorView: NSView {
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
+    // Spacebar toggles playback now that the system player's inline controls
+    // are gone.
+    override var acceptsFirstResponder: Bool { true }
+    override func keyDown(with event: NSEvent) {
+        if event.charactersIgnoringModifiers == " " {
+            playPauseTapped()
+        } else {
+            super.keyDown(with: event)
+        }
+    }
+
     func teardown() {
         estimateTask?.cancel()
+        rateObservation?.invalidate()
+        rateObservation = nil
         if let timeObserver {
             player.removeTimeObserver(timeObserver)
             self.timeObserver = nil
@@ -161,11 +201,29 @@ private final class VideoEditorView: NSView {
         playerView.player = nil
     }
 
+    /// True when the export would differ from the source — any trim, speed,
+    /// volume, crop or burn-in edit is pending. Drives the dirty-close prompt
+    /// and the destructive in-place overwrite confirmation.
+    var hasEdits: Bool {
+        timeline.startFraction > 0.001
+            || timeline.endFraction < 0.999
+            || speed != 1
+            || volumeSlider.floatValue < 1
+            || currentCropPx() != nil
+            || burnOverlay != nil
+    }
+
+    /// Invoked by the controller's close prompt when the user chooses Save.
+    func requestSave() { saveTapped() }
+
     // MARK: Build
 
     private func build() {
         playerView.player = player
-        playerView.controlsStyle = .inline
+        // We own the whole transport in-app (play/pause + filmstrip scrub +
+        // volume), so suppress the system player's duplicate inline chrome
+        // (its own volume, scrubber, AirPlay/PiP).
+        playerView.controlsStyle = .none
         playerView.showsFullScreenToggleButton = false
         playerView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(playerView)
@@ -204,9 +262,23 @@ private final class VideoEditorView: NSView {
         sizePopup.action = #selector(refreshInfo)
         sizePopup.toolTip = "Export resolution"
 
-        let speaker = NSImageView(image: NSImage(
-            systemSymbolName: "speaker.wave.2", accessibilityDescription: "Volume") ?? NSImage())
-        speaker.contentTintColor = .secondaryLabelColor
+        playButton = NSButton(
+            image: NSImage(
+                systemSymbolName: "play.fill", accessibilityDescription: "Play") ?? NSImage(),
+            target: self, action: #selector(playPauseTapped))
+        playButton.bezelStyle = .rounded
+        playButton.toolTip = "Play / pause (space)"
+
+        timeLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        timeLabel.textColor = .secondaryLabelColor
+
+        muteButton = NSButton(
+            image: NSImage(
+                systemSymbolName: "speaker.wave.2", accessibilityDescription: "Mute") ?? NSImage(),
+            target: self, action: #selector(muteTapped))
+        muteButton.isBordered = false
+        muteButton.contentTintColor = .secondaryLabelColor
+        muteButton.toolTip = "Mute"
         volumeSlider = NSSlider(
             value: 1, minValue: 0, maxValue: 1,
             target: self, action: #selector(volumeChanged))
@@ -216,25 +288,31 @@ private final class VideoEditorView: NSView {
         volumeSlider.widthAnchor.constraint(equalToConstant: 70).isActive = true
 
         frameButton = NSButton(
+            title: "Grab Frame",
             image: NSImage(
                 systemSymbolName: "camera", accessibilityDescription: "Grab frame") ?? NSImage(),
             target: self, action: #selector(frameGrabTapped))
         frameButton.bezelStyle = .rounded
+        frameButton.imagePosition = .imageLeading
         frameButton.toolTip = "Open the current frame in the image editor"
 
         cropButton = NSButton(
+            title: "Crop",
             image: NSImage(systemSymbolName: "crop", accessibilityDescription: "Crop") ?? NSImage(),
             target: self, action: #selector(cropTapped))
         cropButton.bezelStyle = .rounded
+        cropButton.imagePosition = .imageLeading
         cropButton.setButtonType(.pushOnPushOff)
         cropButton.toolTip = "Crop the video (double-click the frame to reset)"
 
         annotateButton = NSButton(
+            title: "Annotate",
             image: NSImage(
-                systemSymbolName: "pencil.tip.crop.circle",
+                systemSymbolName: "pencil.and.outline",
                 accessibilityDescription: "Annotate") ?? NSImage(),
             target: self, action: #selector(annotateTapped))
         annotateButton.bezelStyle = .rounded
+        annotateButton.imagePosition = .imageLeading
         annotateButton.toolTip =
             "Annotate this frame — the drawing burns into the whole exported clip"
 
@@ -249,7 +327,7 @@ private final class VideoEditorView: NSView {
         saveButton = NSButton(title: "Save", target: self, action: #selector(saveTapped))
         saveButton.bezelStyle = .rounded
         saveButton.keyEquivalent = "\r"
-        saveButton.bezelColor = .controlAccentColor
+        saveButton.bezelColor = HUDStyle.accentDeep
         saveButton.toolTip = "Replace this recording with the edit"
 
         spinner = NSProgressIndicator()
@@ -259,18 +337,28 @@ private final class VideoEditorView: NSView {
 
         let spacer = NSView()
         spacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        // Grouped by role: [playback] · [preview] · [tools] · [export].
         let bar = NSStackView(views: [
-            infoLabel, spacer, speedPopup, sizePopup, speaker, volumeSlider,
-            spinner, frameButton, cropButton, annotateButton, gifButton, copyButton, saveButton,
+            playButton, timeLabel, makeBarSeparator(),
+            speedPopup, sizePopup, muteButton, volumeSlider, makeBarSeparator(),
+            frameButton, cropButton, annotateButton, makeBarSeparator(),
+            infoLabel, spinner, spacer,
+            gifButton, copyButton, saveButton,
         ])
         bar.orientation = .horizontal
         bar.alignment = .centerY
         bar.spacing = 8
-        bar.setCustomSpacing(2, after: speaker)
-        bar.setCustomSpacing(16, after: volumeSlider)
+        bar.setCustomSpacing(2, after: muteButton)
         bar.edgeInsets = NSEdgeInsets(top: 8, left: 14, bottom: 8, right: 14)
         bar.translatesAutoresizingMaskIntoConstraints = false
         addSubview(bar)
+
+        // Reflect the player's rate in the play/pause glyph (also catches the
+        // auto-pause when playback hits the trim end).
+        rateObservation = player.observe(\.rate, options: [.initial, .new]) { [weak self] player, _ in
+            let rate = player.rate
+            Task { @MainActor in self?.updatePlayButton(rate: rate) }
+        }
 
         NSLayoutConstraint.activate([
             playerView.topAnchor.constraint(equalTo: topAnchor),
@@ -294,6 +382,18 @@ private final class VideoEditorView: NSView {
             bar.bottomAnchor.constraint(equalTo: bottomAnchor),
             bar.heightAnchor.constraint(equalToConstant: 44),
         ])
+    }
+
+    /// A short vertical rule that bounds each role group in the bottom bar.
+    private func makeBarSeparator() -> NSBox {
+        let box = NSBox()
+        box.boxType = .separator
+        box.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            box.widthAnchor.constraint(equalToConstant: 1),
+            box.heightAnchor.constraint(equalToConstant: 22),
+        ])
+        return box
     }
 
     private func loadAsset() {
@@ -321,6 +421,8 @@ private final class VideoEditorView: NSView {
             MainActor.assumeIsolated {
                 guard let self, self.durationSeconds > 0 else { return }
                 self.timeline.playheadFraction = CGFloat(time.seconds / self.durationSeconds)
+                self.timeLabel.stringValue =
+                    "\(Self.timeString(time.seconds)) / \(Self.timeString(self.durationSeconds))"
             }
         }
     }
@@ -382,6 +484,47 @@ private final class VideoEditorView: NSView {
 
     @objc private func volumeChanged() {
         player.volume = volumeSlider.floatValue
+        updateMuteGlyph()
+        refreshInfo()
+    }
+
+    @objc private func muteTapped() {
+        if volumeSlider.floatValue > 0 {
+            lastVolume = volumeSlider.floatValue
+            volumeSlider.floatValue = 0
+        } else {
+            volumeSlider.floatValue = lastVolume > 0 ? lastVolume : 1
+        }
+        volumeChanged()
+    }
+
+    private func updateMuteGlyph() {
+        let muted = volumeSlider.floatValue == 0
+        muteButton.image = NSImage(
+            systemSymbolName: muted ? "speaker.slash" : "speaker.wave.2",
+            accessibilityDescription: muted ? "Unmute" : "Mute")
+        muteButton.toolTip = muted ? "Unmute" : "Mute"
+    }
+
+    @objc private func playPauseTapped() {
+        guard !exporting, durationSeconds > 0 else { return }
+        if player.rate != 0 {
+            player.pause()
+        } else {
+            // Restart from the trim start when parked at (or past) the end.
+            if CMTimeCompare(player.currentTime(), trimRange.end) >= 0 {
+                seek(toFraction: timeline.startFraction)
+            }
+            player.play()
+            player.rate = Float(speed)
+        }
+    }
+
+    private func updatePlayButton(rate: Float) {
+        let playing = rate != 0
+        playButton.image = NSImage(
+            systemSymbolName: playing ? "pause.fill" : "play.fill",
+            accessibilityDescription: playing ? "Pause" : "Play")
     }
 
     // MARK: Info readout
@@ -577,7 +720,8 @@ private final class VideoEditorView: NSView {
 
     private func setBusy(_ busy: Bool) {
         let controls: [NSControl?] = [
-            speedPopup, sizePopup, volumeSlider, gifButton, copyButton, saveButton,
+            playButton, speedPopup, sizePopup, muteButton, volumeSlider,
+            frameButton, cropButton, annotateButton, gifButton, copyButton, saveButton,
         ]
         for control in controls {
             control?.isEnabled = !busy
@@ -589,6 +733,10 @@ private final class VideoEditorView: NSView {
     // MARK: Actions
 
     @objc private func saveTapped() {
+        // Saving replaces a record's only media in place — trim, speed, crop
+        // and burn-in bake in irreversibly. Confirm before the one-way door
+        // (a no-op save on a record, or any Save as Copy, skips this).
+        if case .record = target, hasEdits, !confirmReplaceOriginal() { return }
         let preset = Self.sizeOptions[sizePopup.indexOfSelectedItem].1
         let duration = trimRange.duration.seconds / speed
         runExport { [weak self] in
@@ -620,6 +768,18 @@ private final class VideoEditorView: NSView {
                 self.onSaved?()
             }
         }
+    }
+
+    private func confirmReplaceOriginal() -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Replace the original recording?"
+        alert.informativeText =
+            "Your trim, speed, crop and annotation edits replace this recording in place. "
+            + "This can’t be undone — use “Save as Copy…” to keep the original."
+        alert.addButton(withTitle: "Replace")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     /// Burn-in flow: grab the current frame, annotate it, Apply hands the

@@ -65,7 +65,7 @@ final class QuickAccessOverlay {
     fileprivate func setStackHidden(_ hidden: Bool) {
         guard stackHidden != hidden else { return }
         stackHidden = hidden
-        chevron?.setCollapsed(hidden)
+        chevron?.setCollapsed(hidden, count: cards.count)
         if hidden {
             for panel in cards {
                 NSAnimationContext.runAnimationGroup({ context in
@@ -179,7 +179,7 @@ final class QuickAccessOverlay {
             ? visible.maxX - Self.margin - QAOChevronPanel.width
             : visible.minX + Self.margin
         chevron?.setFrameOrigin(NSPoint(x: x, y: visible.minY + Self.margin))
-        chevron?.setCollapsed(stackHidden)
+        chevron?.setCollapsed(stackHidden, count: cards.count)
         chevron?.orderFrontRegardless()
     }
 }
@@ -190,7 +190,7 @@ final class QuickAccessOverlay {
 /// chevron-up brings them back.
 @MainActor
 private final class QAOChevronPanel: NSPanel {
-    static let width: CGFloat = 36
+    static let width: CGFloat = 44
     static let height: CGFloat = 20
 
     private let onToggle: () -> Void
@@ -226,12 +226,26 @@ private final class QAOChevronPanel: NSPanel {
         setCollapsed(false)
     }
 
-    func setCollapsed(_ collapsed: Bool) {
+    func setCollapsed(_ collapsed: Bool, count: Int = 0) {
         button.image = NSImage(
             systemSymbolName: collapsed ? "chevron.up" : "chevron.down",
             accessibilityDescription: collapsed ? "Show captures" : "Hide captures")?
-            .withSymbolConfiguration(.init(pointSize: 10, weight: .bold))
-        button.toolTip = collapsed ? "Show captures" : "Hide captures"
+            .withSymbolConfiguration(.init(pointSize: 13, weight: .bold))
+        button.contentTintColor = .white
+        // Collapsed, the pill is the only remaining control — advertise the
+        // hidden stack with a count instead of a bare, meaningless chevron.
+        if collapsed && count > 0 {
+            button.imagePosition = .imageLeading
+            button.attributedTitle = NSAttributedString(string: " \(count)", attributes: [
+                .foregroundColor: NSColor.white,
+                .font: NSFont.systemFont(ofSize: 11, weight: .bold)])
+        } else {
+            button.imagePosition = .imageOnly
+            button.title = ""
+        }
+        button.toolTip = collapsed
+            ? "Show \(count) capture\(count == 1 ? "" : "s")"
+            : "Hide captures"
     }
 
     @objc private func tapped() {
@@ -357,9 +371,12 @@ private final class QAOCardView: NSView, NSDraggingSource {
 
     private let scrim = QAOScrimView()
     private var saveButton: QAOIconButton?
+    private let captionBand = QAOCaptionBand(frame: .zero)
     private let captionName = NSTextField(labelWithString: "")
     private let captionMeta = NSTextField(labelWithString: "")
     private var videoMetaText: String?
+    /// When the card appeared — drives the "Just now / 2m ago" recency caption.
+    private let createdAt = Date()
     private static let captionHeight: CGFloat = 22
     private var mouseDownEvent: NSEvent?
     private var didDrag = false
@@ -373,12 +390,12 @@ private final class QAOCardView: NSView, NSDraggingSource {
         self.thumbnail = thumbnail
         if case .still = item.payload { isStill = true } else { isStill = false }
 
-        let width: CGFloat = 240
-        var height: CGFloat = 135
+        let width: CGFloat = 210
+        var height: CGFloat = 118
         if let thumbnail, thumbnail.size.width > 0 {
             height = width * thumbnail.size.height / thumbnail.size.width
         }
-        height = min(max(height, 70), 170)
+        height = min(max(height, 70), 140)
         super.init(frame: NSRect(x: 0, y: 0, width: width, height: height + Self.captionHeight))
         build(video: video)
 
@@ -444,7 +461,7 @@ private final class QAOCardView: NSView, NSDraggingSource {
         scrim.frame = bounds
         scrim.autoresizingMask = [.width, .height]
         scrim.wantsLayer = true
-        scrim.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.45).cgColor
+        scrim.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.28).cgColor
         scrim.alphaValue = 0
         effect.addSubview(scrim)
 
@@ -452,14 +469,14 @@ private final class QAOCardView: NSView, NSDraggingSource {
             QAOIconButton(symbol: "doc.on.doc", tooltip: "Copy", target: self, action: #selector(copyAction)),
         ]
         let save = QAOIconButton(
-            symbol: item.fileURL == nil ? "arrow.down.circle" : "magnifyingglass",
+            symbol: item.fileURL == nil ? "arrow.down.circle" : "folder",
             tooltip: item.fileURL == nil ? "Save" : "Reveal in Finder",
             target: self, action: #selector(saveOrRevealAction))
         saveButton = save
         buttons.append(save)
         if isStill {
             buttons.append(QAOIconButton(
-                symbol: "pencil.tip", tooltip: "Annotate", target: self, action: #selector(annotateAction)))
+                symbol: "pencil.and.outline", tooltip: "Annotate", target: self, action: #selector(annotateAction)))
             buttons.append(QAOIconButton(
                 symbol: "pin", tooltip: "Pin", target: self, action: #selector(pinAction)))
         }
@@ -467,6 +484,10 @@ private final class QAOCardView: NSView, NSDraggingSource {
             buttons.append(QAOIconButton(
                 symbol: "scissors", tooltip: "Edit", target: self, action: #selector(editVideoAction)))
         }
+        // Every hidden action (OCR, Send to, Convert, Move to Bin) also lives in
+        // the right-click menu; this makes that same menu discoverable.
+        buttons.append(QAOIconButton(
+            symbol: "ellipsis.circle", tooltip: "More…", target: self, action: #selector(moreActions(_:))))
         let side: CGFloat = 28
         let gap: CGFloat = 10
         let total = CGFloat(buttons.count) * side + CGFloat(buttons.count - 1) * gap
@@ -491,15 +512,15 @@ private final class QAOCardView: NSView, NSDraggingSource {
     /// Bottom band: filename (or save state) left, dimensions/duration right —
     /// what this card is, without hovering.
     private func buildCaption(in effect: NSView) {
-        let band = QAOCaptionBand(frame: NSRect(
-            x: 0, y: 0, width: bounds.width, height: Self.captionHeight))
+        let band = captionBand
+        band.frame = NSRect(x: 0, y: 0, width: bounds.width, height: Self.captionHeight)
         band.autoresizingMask = [.width, .maxYMargin]
 
         captionName.font = .systemFont(ofSize: 10, weight: .medium)
         captionName.textColor = NSColor.white.withAlphaComponent(0.85)
         captionName.lineBreakMode = .byTruncatingMiddle
         captionMeta.font = .monospacedDigitSystemFont(ofSize: 9.5, weight: .regular)
-        captionMeta.textColor = NSColor.white.withAlphaComponent(0.55)
+        captionMeta.textColor = NSColor.white.withAlphaComponent(0.7)
         captionMeta.alignment = .right
         for label in [captionName, captionMeta] {
             label.translatesAutoresizingMaskIntoConstraints = false
@@ -519,8 +540,19 @@ private final class QAOCardView: NSView, NSDraggingSource {
         refreshCaption()
     }
 
+    /// A friendly recency cue — the card stack is newest-at-corner, but nothing
+    /// else on the card says so. The full filename lives in the tooltip.
+    private func relativeTimeString() -> String {
+        let elapsed = Date().timeIntervalSince(createdAt)
+        if elapsed < 45 { return "Just now" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter.localizedString(for: createdAt, relativeTo: Date())
+    }
+
     private func refreshCaption() {
-        captionName.stringValue = item.fileURL?.lastPathComponent ?? "Not saved yet"
+        captionName.stringValue = relativeTimeString()
+        captionName.toolTip = item.fileURL?.lastPathComponent ?? "Not saved yet"
         switch item.payload {
         case .still(let still):
             var meta = "\(still.image.width)×\(still.image.height)"
@@ -552,9 +584,17 @@ private final class QAOCardView: NSView, NSDraggingSource {
     override func mouseExited(with event: NSEvent) { setHover(false) }
 
     private func setHover(_ hovering: Bool) {
+        let collapsed = (window as? QAOCardPanel)?.isCollapsed ?? false
+        // Keep the recency caption honest on interaction (it doesn't tick).
+        if hovering { refreshCaption() }
+        // A collapsed sliver has no room for the action row — brighten its
+        // caption band and advertise the click-to-expand instead; an expanded
+        // card surfaces the full filename the recency caption replaced.
+        toolTip = collapsed ? "Click to expand" : item.fileURL?.lastPathComponent
+        captionBand.setHighlighted(hovering && collapsed)
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.15
-            scrim.animator().alphaValue = hovering ? 1 : 0
+            scrim.animator().alphaValue = (hovering && !collapsed) ? 1 : 0
         }
     }
 
@@ -660,6 +700,12 @@ private final class QAOCardView: NSView, NSDraggingSource {
     // MARK: Context menu
 
     override func rightMouseDown(with event: NSEvent) {
+        NSMenu.popUpContextMenu(makeMenu(), with: event, for: self)
+    }
+
+    /// The full action set, shared by right-click and the "More…" hover button
+    /// so both stay in sync.
+    private func makeMenu() -> NSMenu {
         let menu = NSMenu()
         func add(_ title: String, _ selector: Selector) {
             let entry = NSMenuItem(title: title, action: selector, keyEquivalent: "")
@@ -712,7 +758,14 @@ private final class QAOCardView: NSView, NSDraggingSource {
             add("Move to Bin", #selector(trashAction))
         }
         add("Close", #selector(closeAction))
-        NSMenu.popUpContextMenu(menu, with: event, for: self)
+        return menu
+    }
+
+    @objc private func moreActions(_ sender: NSButton) {
+        makeMenu().popUp(
+            positioning: nil,
+            at: NSPoint(x: 0, y: sender.bounds.height + 4),
+            in: sender)
     }
 
     // MARK: Actions
@@ -731,11 +784,15 @@ private final class QAOCardView: NSView, NSDraggingSource {
     @objc private func saveOrRevealAction() {
         if let url = item.fileURL {
             NSWorkspace.shared.activateFileViewerSelecting([url])
-        } else if case .still(let still) = item.payload {
+        } else if case .still(var still) = item.payload {
             guard let result = OutputRouter.shared.reExport(still) else { return }
-            item.fileURL = result.url
-            item.recordID = result.recordID
-            saveButton?.setSymbol("magnifyingglass", tooltip: "Reveal in Finder")
+            // Rebuild the payload so annotate/copyText/convert/drag key off the
+            // saved record instead of the stale nil-id still (which forked a
+            // duplicate history entry).
+            still.recordID = result.recordID
+            item = DeliveredCapture(
+                payload: .still(still), fileURL: result.url, recordID: result.recordID)
+            saveButton?.setSymbol("folder", tooltip: "Reveal in Finder")
             refreshCaption()
             Toast.show("Saved", symbol: "arrow.down.circle")
         }
@@ -913,13 +970,25 @@ private final class QAOCaptionBand: NSView {
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
+    /// Collapsed slivers brighten their band on hover as a click-to-expand cue.
+    func setHighlighted(_ on: Bool) {
+        layer?.backgroundColor = NSColor.white
+            .withAlphaComponent(on ? 0.16 : 0).cgColor
+        if !on {
+            layer?.backgroundColor = NSColor.black.withAlphaComponent(0.35).cgColor
+        }
+    }
+
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 private final class QAOIconButton: NSButton {
+    private static let restBackground = NSColor.white.withAlphaComponent(0.10).cgColor
+    private static let hoverBackground = NSColor.white.withAlphaComponent(0.24).cgColor
+
     init(
         symbol: String, tooltip: String, target: AnyObject, action: Selector,
-        size: CGFloat = 28, symbolSize: CGFloat = 14, cornerRadius: CGFloat = 6
+        size: CGFloat = 28, symbolSize: CGFloat = 14, cornerRadius: CGFloat? = nil
     ) {
         super.init(frame: NSRect(x: 0, y: 0, width: size, height: size))
         isBordered = false
@@ -929,7 +998,10 @@ private final class QAOIconButton: NSButton {
         self.target = target
         self.action = action
         wantsLayer = true
-        layer?.cornerRadius = cornerRadius
+        // A persistent circular container so the glyphs read as tap targets at
+        // rest, not watermark decoration; hover just brightens it.
+        layer?.cornerRadius = cornerRadius ?? size / 2
+        layer?.backgroundColor = Self.restBackground
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -953,10 +1025,10 @@ private final class QAOIconButton: NSButton {
     }
 
     override func mouseEntered(with event: NSEvent) {
-        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.18).cgColor
+        layer?.backgroundColor = Self.hoverBackground
     }
 
     override func mouseExited(with event: NSEvent) {
-        layer?.backgroundColor = nil
+        layer?.backgroundColor = Self.restBackground
     }
 }

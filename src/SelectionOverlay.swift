@@ -102,7 +102,7 @@ final class SelectionController {
         case .window: return "Click a window — drag to select — Esc cancels"
         case .ocr: return "Drag over text — Esc cancels"
         case .scrolling, .pin: return "Drag to select — Esc cancels"
-        case .allInOne: return "Select, then pick an action below — Esc cancels"
+        case .allInOne: return ""   // guidance lives inline on the strip instead
         case .measure: return "Drag to measure — Esc cancels"
         }
     }
@@ -234,6 +234,7 @@ final class SelectionController {
                 rect: display.frame, window: nil, display: display,
                 frozen: frozen[display.displayID])
             selection.chosenAction = .captureArea
+            selection.timerSeconds = strip?.timerSeconds ?? 0
             finish(with: selection)
             return
         }
@@ -921,6 +922,7 @@ private final class SelectionOverlayView: NSView {
 
     private func drawHintPill() {
         let text = controller.hintText
+        guard !text.isEmpty else { return }
         let attrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 12, weight: .medium),
             .foregroundColor: NSColor.white.withAlphaComponent(0.9),
@@ -1005,6 +1007,7 @@ private final class AllInOneStrip: NSPanel, NSTextFieldDelegate {
     private var widthField: NSTextField!
     private var heightField: NSTextField!
     private var timerButton: NSButton!
+    private var hintLabel: NSTextField!
     /// Cycled by the timer button: 0 → 3 → 5 → 10.
     private(set) var timerSeconds = 0
 
@@ -1046,17 +1049,24 @@ private final class AllInOneStrip: NSPanel, NSTextFieldDelegate {
         let xLabel = NSTextField(labelWithString: "×")
         xLabel.font = .systemFont(ofSize: 11, weight: .medium)
         xLabel.textColor = NSColor.white.withAlphaComponent(0.6)
+        let pxLabel = NSTextField(labelWithString: "px")
+        pxLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        pxLabel.textColor = NSColor.white.withAlphaComponent(0.6)
         stack.addArrangedSubview(widthField)
         stack.addArrangedSubview(xLabel)
         stack.addArrangedSubview(heightField)
-        stack.addArrangedSubview(stripDivider())
+        stack.addArrangedSubview(pxLabel)
+        let sizeDivider = stripDivider()
+        stack.addArrangedSubview(sizeDivider)
         stack.setCustomSpacing(4, after: widthField)
         stack.setCustomSpacing(4, after: xLabel)
-        stack.setCustomSpacing(8, after: heightField)
-        stack.setCustomSpacing(8, after: stack.arrangedSubviews[stack.arrangedSubviews.count - 1])
+        stack.setCustomSpacing(4, after: heightField)
+        stack.setCustomSpacing(8, after: pxLabel)
+        stack.setCustomSpacing(8, after: sizeDivider)
 
         // Self-timer: cycles Off → 3s → 5s → 10s, applies to still actions.
         timerButton = stripButton(symbol: "timer", label: "Timer", tag: -1)
+        timerButton.toolTip = "Self-timer — click to cycle 3s / 5s / 10s"
         timerButton.target = self
         timerButton.action = #selector(timerTapped)
         stack.addArrangedSubview(timerButton)
@@ -1082,18 +1092,31 @@ private final class AllInOneStrip: NSPanel, NSTextFieldDelegate {
         stack.addArrangedSubview(cancel)
         self.entriesActions = entries.map(\.action)
 
+        // Inline guidance so the precondition sits WITH the strip, not stranded
+        // in a hint pill at the top of the screen far from this bottom toolbar.
+        hintLabel = NSTextField(labelWithString: "Drag anywhere to select a region")
+        hintLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        hintLabel.textColor = NSColor.white.withAlphaComponent(0.75)
+        hintLabel.alignment = .center
+
+        let column = NSStackView(views: [hintLabel, stack])
+        column.orientation = .vertical
+        column.alignment = .centerX
+        column.spacing = 2
+        column.edgeInsets = NSEdgeInsets(top: 7, left: 0, bottom: 0, right: 0)
+
         let card = HUDStyle.card()
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        card.addSubview(stack)
+        column.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(column)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: card.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: card.trailingAnchor),
-            stack.topAnchor.constraint(equalTo: card.topAnchor),
-            stack.bottomAnchor.constraint(equalTo: card.bottomAnchor),
+            column.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+            column.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+            column.topAnchor.constraint(equalTo: card.topAnchor),
+            column.bottomAnchor.constraint(equalTo: card.bottomAnchor),
         ])
         contentView = card
 
-        let size = stack.fittingSize
+        let size = column.fittingSize
         let origin = NSPoint(
             x: screen.visibleFrame.midX - size.width / 2,
             y: screen.visibleFrame.minY + 28)
@@ -1122,7 +1145,7 @@ private final class AllInOneStrip: NSPanel, NSTextFieldDelegate {
         field.isEnabled = false
         field.delegate = self
         field.translatesAutoresizingMaskIntoConstraints = false
-        field.widthAnchor.constraint(equalToConstant: 48).isActive = true
+        field.widthAnchor.constraint(equalToConstant: 56).isActive = true
         return field
     }
 
@@ -1181,11 +1204,25 @@ private final class AllInOneStrip: NSPanel, NSTextFieldDelegate {
 
     func setSelectionAvailable(_ available: Bool) {
         for button in selectionButtons {
+            if button === captureButton {
+                // Capture is the strip's primary action (Return): keep it
+                // reading as primary (accent) even while it waits for a region,
+                // instead of dropping it into the dead-grey cluster where the
+                // lit Fullscreen button would look like the pre-selected default.
+                button.isEnabled = available
+                button.alphaValue = available ? 1 : 0.6
+                button.contentTintColor = HUDStyle.accent
+                button.toolTip = available ? "Capture (⏎)" : "Select a region first"
+                continue
+            }
             button.isEnabled = available
             button.alphaValue = available ? 1 : 0.35
+            // A greyed button should say WHY it's disabled, not repeat its label.
+            button.toolTip = available ? button.title : "Select a region first"
         }
-        // Capture is the strip's default action (Return) — read as primary.
-        captureButton?.contentTintColor = available ? HUDStyle.accent : .white
+        hintLabel.stringValue = available
+            ? "Return to capture · drag edges to resize"
+            : "Drag anywhere to select a region"
     }
 
     @objc private func buttonTapped(_ sender: NSButton) {
@@ -1230,12 +1267,27 @@ private final class StripHoverButton: NSButton {
         super.updateTrackingAreas()
     }
 
+    private var hovered = false
+
     override func mouseEntered(with event: NSEvent) {
         guard isEnabled else { return }
-        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.12).cgColor
+        hovered = true
+        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.10).cgColor
     }
 
     override func mouseExited(with event: NSEvent) {
+        hovered = false
         layer?.backgroundColor = nil
+    }
+
+    // A momentary press gets a stronger wash than the subtle hover, so a
+    // transient hover can never be mistaken for a committed/selected state.
+    override func mouseDown(with event: NSEvent) {
+        if isEnabled {
+            layer?.backgroundColor = NSColor.white.withAlphaComponent(0.20).cgColor
+        }
+        super.mouseDown(with: event)
+        layer?.backgroundColor = (hovered && isEnabled)
+            ? NSColor.white.withAlphaComponent(0.10).cgColor : nil
     }
 }

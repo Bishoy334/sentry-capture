@@ -105,6 +105,14 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     private let sourceFileURL: URL?
     private let windowUndoManager = UndoManager()
 
+    /// Unsaved-edit tracking (safety): any canvas edit, background or
+    /// adjustment change flips this; the save paths clear it. Drives the
+    /// close-time "save?" prompt and the titlebar documentEdited dot.
+    private var isDirty = false {
+        didSet { window.isDocumentEdited = isDirty }
+    }
+    private func markDirty() { isDirty = true }
+
     private var toolButtons: [(tool: AnnotatorTool, button: NSButton)] = []
     private let optionsStack = NSStackView()
     private var optionsBarHeight: NSLayoutConstraint!
@@ -116,6 +124,8 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     private var adjustActive = false
     private var adjustSliders: [NSSlider] = []
     private var adjustResets: [NSButton] = []
+    /// Right-aligned live value readouts, one per adjustment slider row.
+    private var adjustValueLabels: [NSTextField] = []
     /// Index 0 = None, then EffectPreset.allCases order.
     private var effectButtons: [NSButton] = []
     private var effectThumbsBase: CGImage?
@@ -141,10 +151,27 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     private let backdrop = AnnotatorBackdropView()
     private var backgroundButton: NSButton?
     private var backgroundBarActive = false
+    /// Background fill swatches paired with the fill they apply, so the
+    /// active one can wear an accent selection ring (persisted across reopen).
+    private var fillSwatches: [(fill: AnnotatorBackgroundStyle.Fill, button: NSButton)] = []
+    /// Live px readouts for the PADDING / CORNERS sliders.
+    private var paddingValueLabel: NSTextField?
+    private var cornersValueLabel: NSTextField?
+    /// Idle toolbar glyph tint — brighter than secondaryLabelColor so the
+    /// dense tool row stays scannable on the dark titlebar.
+    private static let idleGlyphTint = NSColor.white.withAlphaComponent(0.7)
+    /// Extra solid fills beyond the model's presets (black + a neutral grey),
+    /// plus a custom-colour well — the palette a beautify feature needs.
+    private static let extraSolids: [(tag: Int, name: String, colour: NSColor)] = [
+        (200, "Black", .black),
+        (201, "Grey", NSColor(white: 0.5, alpha: 1)),
+    ]
     private var backgroundStyle = AnnotatorBackgroundStyle() {
         didSet {
             layoutBackdrop()
             refreshChrome()
+            updateFillSelection()
+            markDirty()
             // Padding growth must not push the document out of view.
             zoomOutToFitIfNeeded()
         }
@@ -223,6 +250,15 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             refreshChrome()
             if adjustActive { refreshEffectThumbs() }   // thumbs follow the new base
         }
+        // Every completed canvas edit closes an undo group — the single
+        // reliable signal that pixels/annotations changed (selection and tool
+        // switches never register undo, so they don't fire this).
+        NotificationCenter.default.addObserver(
+            forName: .NSUndoManagerDidCloseUndoGroup,
+            object: windowUndoManager, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.markDirty() }
+        }
 
         sizeWindowToImage()
         refreshImageMeta()
@@ -230,6 +266,9 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         if let restoredBackground {
             backgroundStyle = restoredBackground
         }
+        // Restored state and setup mutations above are the saved baseline, not
+        // user edits — start clean.
+        isDirty = false
     }
 
     func show() {
@@ -239,6 +278,28 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     }
 
     // MARK: NSWindowDelegate
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        // Burn-in is a transient overlay flow (Apply is the explicit commit) —
+        // keep the immediate close, no prompt.
+        guard onBurnIn == nil, isDirty else { return true }
+        let alert = NSAlert()
+        alert.messageText = "Save changes to this image?"
+        alert.informativeText = "Your edits will be lost if you don't save them."
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Don't Save")
+        alert.addButton(withTitle: "Cancel")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            saveTapped()
+            // A failed save leaves the flag set — keep the window open.
+            return !isDirty
+        case .alertSecondButtonReturn:
+            return true
+        default:
+            return false
+        }
+    }
 
     func windowWillClose(_ notification: Notification) {
         // The shared colour panel outlives the editor — don't leave it
@@ -343,15 +404,21 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         stack.spacing = 2
         stack.translatesAutoresizingMaskIntoConstraints = false
 
-        for (groupIndex, group) in Self.toolbarGroups.enumerated() {
-            if groupIndex > 0 {
-                let divider = hairline()
-                divider.heightAnchor.constraint(equalToConstant: 18).isActive = true
-                divider.widthAnchor.constraint(equalToConstant: 1).isActive = true
-                stack.addArrangedSubview(divider)
-                stack.setCustomSpacing(8, after: stack.arrangedSubviews[stack.arrangedSubviews.count - 2])
-                stack.setCustomSpacing(8, after: divider)
+        // Bounded divider: every semantic cluster is fenced the same way, so
+        // tool groups, chrome actions and panel toggles never read as one run.
+        func addDivider() {
+            let divider = hairline()
+            divider.heightAnchor.constraint(equalToConstant: 18).isActive = true
+            divider.widthAnchor.constraint(equalToConstant: 1).isActive = true
+            if let last = stack.arrangedSubviews.last {
+                stack.setCustomSpacing(8, after: last)
             }
+            stack.addArrangedSubview(divider)
+            stack.setCustomSpacing(8, after: divider)
+        }
+
+        for (groupIndex, group) in Self.toolbarGroups.enumerated() {
+            if groupIndex > 0 { addDivider() }
             for tool in group {
                 let index = AnnotatorTool.allCases.firstIndex(of: tool) ?? 0
                 let button = toolbarIconButton(
@@ -364,46 +431,53 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             }
         }
 
-        // Rotate & flip: whole-canvas orientation, menu-driven.
+        // One-shot / menu actions on the base image — their own fenced group so
+        // a tap here (rotate menu, remove-background) never reads as arming a
+        // persistent tool.
+        addDivider()
         let rotate = toolbarIconButton(
             symbol: "rotate.right", tooltip: "Rotate & Flip",
             action: #selector(rotateTapped(_:)))
-        stack.insertArrangedSubview(rotate, at: 2)
-
-        // Remove Background is an action, not a tool — it fires once and the
-        // undo stack holds the result. Lives beside its sibling, lift.
+        stack.addArrangedSubview(rotate)
         let removeBG = toolbarIconButton(
             symbol: "person.and.background.dotted", tooltip: "Remove Background",
             action: #selector(removeBackgroundTapped))
-        stack.insertArrangedSubview(removeBG, at: 3)
+        stack.addArrangedSubview(removeBG)
 
-        // Background mode is chrome-level, not a canvas tool — its button
-        // lives beside crop but toggles the options bar instead of the tool.
+        // Panel toggles are chrome, not tools — fenced off so their accent
+        // pill reads as "a column is open", distinct from a selected tool.
+        addDivider()
         let background = toolbarIconButton(
             symbol: "photo.on.rectangle", tooltip: "Background (B)",
             action: #selector(backgroundTapped))
-        stack.insertArrangedSubview(background, at: 4)
+        stack.addArrangedSubview(background)
         backgroundButton = background
-
-        // Adjustments inspector toggle — the right-hand column counterpart.
         let adjust = toolbarIconButton(
             symbol: "slider.horizontal.3", tooltip: "Adjust",
             action: #selector(adjustTapped))
-        stack.insertArrangedSubview(adjust, at: 5)
+        stack.addArrangedSubview(adjust)
         adjustButton = adjust
 
-        // Sticker stamps: a one-tap emoji menu, placed as movable annotations.
+        // Stamps: sticker (emoji menu) + watermark, their own fenced group.
+        addDivider()
         let sticker = toolbarIconButton(
             symbol: "face.smiling", tooltip: "Sticker",
             action: #selector(stickerTapped(_:)))
         stack.addArrangedSubview(sticker)
-
-        // Watermark: translucent text/logo object with opacity + tile in the
-        // options bar — rides the object model and the .sentryshot file.
         let watermark = toolbarIconButton(
             symbol: "signature", tooltip: "Watermark",
             action: #selector(watermarkTapped(_:)))
         stack.addArrangedSubview(watermark)
+
+        // The dense tool row scrolls horizontally when the window is narrow,
+        // so tools never clip or overlap the trailing actions cluster.
+        let toolScroll = NSScrollView()
+        toolScroll.drawsBackground = false
+        toolScroll.hasHorizontalScroller = false
+        toolScroll.hasVerticalScroller = false
+        toolScroll.automaticallyAdjustsContentInsets = false
+        toolScroll.documentView = stack
+        toolScroll.translatesAutoresizingMaskIntoConstraints = false
 
         // Undo/redo sit between the tools and the primary actions.
         undoButton = toolbarIconButton(
@@ -411,8 +485,8 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         redoButton = toolbarIconButton(
             symbol: "arrow.uturn.forward", tooltip: "Redo (⇧⌘Z)", action: #selector(redoTapped))
 
-        // Primary actions live top-right: send, pin, copy, then a real Save
-        // button — the terminal action of the whole editor, not another glyph.
+        // Primary actions live top-right: send, pin, copy, then the real Save
+        // (brand accent, not system blue) with a chevron holding Save As….
         let send = toolbarIconButton(
             symbol: "paperplane", tooltip: "Send to Sentry app",
             action: #selector(sendToTapped(_:)))
@@ -424,32 +498,60 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         save.bezelStyle = .rounded
         save.controlSize = .small
         save.font = .systemFont(ofSize: 12, weight: .medium)
-        save.bezelColor = .controlAccentColor
+        save.bezelColor = HUDStyle.accentDeep
         save.toolTip = "Save (⌘S)"
         saveButton = save
-        let actions = NSStackView(views: [undoButton, redoButton, send, pin, copy, save])
+        let saveMore = toolbarIconButton(
+            symbol: "chevron.down", tooltip: "More save options",
+            action: #selector(saveMenuTapped(_:)))
+        saveMore.contentTintColor = Self.idleGlyphTint
+        let actions = NSStackView(views: [undoButton, redoButton, send, pin, copy, save, saveMore])
         actions.orientation = .horizontal
         actions.spacing = 2
         actions.setCustomSpacing(12, after: redoButton)
         actions.setCustomSpacing(8, after: copy)
+        actions.setCustomSpacing(0, after: save)
         actions.translatesAutoresizingMaskIntoConstraints = false
+        actions.setContentHuggingPriority(.required, for: .horizontal)
+        actions.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         let separator = hairline()
-        container.addSubview(stack)
+        container.addSubview(toolScroll)
         container.addSubview(actions)
         container.addSubview(separator)
+        // Hug the tools to the actions cluster (breakable), so the scroll view
+        // fills the width but yields when the window narrows.
+        let toolTrailing = toolScroll.trailingAnchor.constraint(
+            equalTo: actions.leadingAnchor, constant: -12)
+        toolTrailing.priority = .defaultHigh
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 10),
-            stack.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            stack.topAnchor.constraint(equalTo: toolScroll.contentView.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: toolScroll.contentView.leadingAnchor),
+            stack.heightAnchor.constraint(equalTo: toolScroll.contentView.heightAnchor),
+
+            toolScroll.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 10),
+            toolScroll.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            toolScroll.heightAnchor.constraint(equalToConstant: 28),
+            toolScroll.trailingAnchor.constraint(lessThanOrEqualTo: actions.leadingAnchor, constant: -12),
+            toolTrailing,
             actions.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -10),
             actions.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-            stack.trailingAnchor.constraint(lessThanOrEqualTo: actions.leadingAnchor, constant: -12),
             separator.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             separator.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             separator.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             separator.heightAnchor.constraint(equalToConstant: 1),
         ])
         return container
+    }
+
+    @objc private func saveMenuTapped(_ sender: NSButton) {
+        let menu = NSMenu()
+        let saveAs = NSMenuItem(
+            title: "Save As…", action: #selector(saveAsTapped), keyEquivalent: "s")
+        saveAs.keyEquivalentModifierMask = [.command, .shift]
+        saveAs.target = self
+        menu.addItem(saveAs)
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.maxY + 4), in: sender)
     }
 
     private func toolbarIconButton(
@@ -462,7 +564,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: tooltip)?
             .withSymbolConfiguration(.init(pointSize: 14, weight: .medium))
         button.toolTip = tooltip
-        button.contentTintColor = .secondaryLabelColor
+        button.contentTintColor = Self.idleGlyphTint
         button.wantsLayer = true
         button.layer?.cornerRadius = 6
         button.target = self
@@ -511,27 +613,26 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             button.toolTip = tip
             return button
         }
+        // The live percentage readout IS the actual-size control (Figma /
+        // Preview pattern) — no separate, identically-labelled "100%" button.
         zoomLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         zoomLabel.textColor = .secondaryLabelColor
         zoomLabel.alignment = .center
+        zoomLabel.toolTip = "Actual size (⌘0)"
         zoomLabel.translatesAutoresizingMaskIntoConstraints = false
         zoomLabel.widthAnchor.constraint(equalToConstant: 40).isActive = true
+        zoomLabel.addGestureRecognizer(
+            NSClickGestureRecognizer(target: self, action: #selector(zoomActualTapped)))
         let zoomOut = zoomButton("−", #selector(zoomOutTapped), tip: "Zoom out (⌘-)")
         let zoomIn = zoomButton("+", #selector(zoomInTapped), tip: "Zoom in (⌘+)")
         let zoomFit = zoomButton("Fit", #selector(zoomFitTapped), tip: "Fit in window")
-        let zoomActual = zoomButton("100%", #selector(zoomActualTapped), tip: "Actual size (⌘0)")
-
-        let saveAs = NSButton(title: "Save As…", target: self, action: #selector(saveAsTapped))
-        saveAs.controlSize = .small
-        saveAs.bezelStyle = .accessoryBarAction
 
         let spacer = NSView()
         spacer.setContentHuggingPriority(.init(1), for: .horizontal)
 
         let stack = NSStackView(views: [
-            dimensionsLabel, spacer, zoomOut, zoomLabel, zoomIn, zoomFit, zoomActual, saveAs,
+            dimensionsLabel, spacer, zoomOut, zoomLabel, zoomIn, zoomFit,
         ])
-        stack.setCustomSpacing(16, after: zoomActual)
         stack.orientation = .horizontal
         stack.spacing = 8
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -571,7 +672,8 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     private func refreshImageMeta() {
         let w = canvas.baseImage.width
         let h = canvas.baseImage.height
-        window.title = "\(sourceFileURL?.lastPathComponent ?? "Annotate") — \(w)x\(h)"
+        // Dimensions live in the footer only — no redundant second readout.
+        window.title = sourceFileURL?.lastPathComponent ?? "Annotate"
         dimensionsLabel.stringValue = "\(w) × \(h) px"
     }
 
@@ -579,7 +681,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         for (tool, button) in toolButtons {
             let selected = tool == canvas.tool
             button.layer?.backgroundColor = selected ? HUDStyle.accentDeep.cgColor : nil
-            button.contentTintColor = selected ? .white : .secondaryLabelColor
+            button.contentTintColor = selected ? .white : Self.idleGlyphTint
         }
         undoButton.isEnabled = windowUndoManager.canUndo
         redoButton.isEnabled = windowUndoManager.canRedo
@@ -589,7 +691,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
                 backgroundBarActive ? HUDStyle.accentDeep.cgColor : nil
             backgroundButton.contentTintColor = backgroundBarActive
                 ? .white
-                : (active ? HUDStyle.accent : .secondaryLabelColor)
+                : (active ? HUDStyle.accent : Self.idleGlyphTint)
         }
         if let adjustButton {
             // Amber hints that un-baked adjustments are live even with the
@@ -599,7 +701,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
                 adjustActive ? HUDStyle.accentDeep.cgColor : nil
             adjustButton.contentTintColor = adjustActive
                 ? .white
-                : (active ? HUDStyle.accent : .secondaryLabelColor)
+                : (active ? HUDStyle.accent : Self.idleGlyphTint)
         }
         rebuildOptionsBar()
     }
@@ -621,14 +723,41 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     }
 
     /// Tracked-uppercase eyebrow, per the Sentry brand's section heads.
+    /// secondaryLabelColor at 11pt so headings stay legible on the dark chrome.
     private func eyebrow(_ text: String) -> NSTextField {
         let label = NSTextField(labelWithString: "")
         label.attributedStringValue = NSAttributedString(string: text, attributes: [
-            .font: NSFont.systemFont(ofSize: 10, weight: .semibold),
-            .foregroundColor: NSColor.tertiaryLabelColor,
+            .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
+            .foregroundColor: NSColor.secondaryLabelColor,
             .kern: 0.8,
         ])
         return label
+    }
+
+    /// Bold panel title crowning each inspector column so it names itself.
+    private func panelTitle(_ text: String) -> NSTextField {
+        let label = NSTextField(labelWithString: text)
+        label.font = .systemFont(ofSize: 13, weight: .semibold)
+        label.textColor = .labelColor
+        return label
+    }
+
+    /// Human-readable readout for a slider value: kelvin for temperature,
+    /// percent for the multiplicative sliders, a signed decimal for the
+    /// bipolar ones (so the neutral zero is unambiguous).
+    private func adjustValueText(_ p: AdjustParam, _ v: CGFloat) -> String {
+        switch p {
+        case .temperature:
+            return "\(Int(v.rounded()))K"
+        case .tint:
+            return String(format: "%+d", Int(v.rounded()))
+        case .contrast, .saturation, .highlights:
+            return "\(Int((v * 100).rounded()))%"
+        case .sharpen:
+            return String(format: "%.2f", v)
+        default:
+            return String(format: "%+.2f", v)
+        }
     }
 
     /// The adjustments workspace: a right column mirroring the background
@@ -677,11 +806,17 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
     }
 
     private func populateAdjustInspector() {
+        // Column title so the panel names itself (worst when both are open).
+        let title = panelTitle("Adjustments")
+        inspectorStack.addArrangedSubview(title)
+        inspectorStack.setCustomSpacing(10, after: title)
+
         // Effects strip on top (plan Phase D): one-tap looks, thumbnails
         // rendered from the actual image when the panel opens.
         let effectsHead = eyebrow("EFFECTS")
         inspectorStack.addArrangedSubview(effectsHead)
-        inspectorStack.setCustomSpacing(4, after: effectsHead)
+        inspectorStack.setCustomSpacing(6, after: effectsHead)
+        var effectCells: [NSView] = []
         for (i, title) in (["None"] + EffectPreset.allCases.map(\.label)).enumerated() {
             let button = NSButton()
             button.title = ""
@@ -691,7 +826,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             button.imageScaling = .scaleProportionallyUpOrDown
             button.toolTip = title
             button.wantsLayer = true
-            button.layer?.cornerRadius = 4
+            button.layer?.cornerRadius = 5
             button.layer?.masksToBounds = true
             button.layer?.borderColor = HUDStyle.accent.cgColor
             button.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.04).cgColor
@@ -699,15 +834,27 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             button.target = self
             button.action = #selector(effectTapped(_:))
             button.translatesAutoresizingMaskIntoConstraints = false
-            button.widthAnchor.constraint(equalToConstant: 50).isActive = true
-            button.heightAnchor.constraint(equalToConstant: 34).isActive = true
+            button.widthAnchor.constraint(equalToConstant: 48).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 40).isActive = true
             effectButtons.append(button)
+            // Caption below each tile so looks are browsable without hovering.
+            let caption = NSTextField(labelWithString: title)
+            caption.font = .systemFont(ofSize: 9, weight: .medium)
+            caption.textColor = .secondaryLabelColor
+            caption.alignment = .center
+            caption.lineBreakMode = .byTruncatingTail
+            let cell = NSStackView(views: [button, caption])
+            cell.orientation = .vertical
+            cell.spacing = 2
+            cell.alignment = .centerX
+            effectCells.append(cell)
         }
-        for chunk in stride(from: 0, to: effectButtons.count, by: 3) {
+        for chunk in stride(from: 0, to: effectCells.count, by: 3) {
             let row = NSStackView(
-                views: Array(effectButtons[chunk..<min(chunk + 3, effectButtons.count)]))
+                views: Array(effectCells[chunk..<min(chunk + 3, effectCells.count)]))
             row.orientation = .horizontal
             row.spacing = 6
+            row.alignment = .top
             inspectorStack.addArrangedSubview(row)
         }
 
@@ -749,10 +896,17 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             reset.target = self
             reset.action = #selector(adjustResetTapped(_:))
             reset.isEnabled = false
+            // Live value readout so the user isn't dragging blind, and the
+            // neutral point of bipolar sliders reads unambiguously.
+            let value = NSTextField(labelWithString: adjustValueText(p, CGFloat(p.range.neutral)))
+            value.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+            value.textColor = .secondaryLabelColor
+            value.alignment = .right
             let spacer = NSView()
             spacer.setContentHuggingPriority(.init(1), for: .horizontal)
-            let row = NSStackView(views: [label, spacer, reset])
+            let row = NSStackView(views: [label, spacer, value, reset])
             row.orientation = .horizontal
+            row.spacing = 4
             row.translatesAutoresizingMaskIntoConstraints = false
             row.widthAnchor.constraint(equalToConstant: 162).isActive = true
 
@@ -769,6 +923,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             inspectorStack.addArrangedSubview(slider)
             adjustSliders.append(slider)
             adjustResets.append(reset)
+            adjustValueLabels.append(value)
         }
 
         // Advanced: the curves widget (its endpoints double as levels).
@@ -779,11 +934,11 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         advancedToggle.image = NSImage(
             systemSymbolName: "chevron.right", accessibilityDescription: "Expand")?
             .withSymbolConfiguration(.init(pointSize: 8, weight: .semibold))
-        advancedToggle.contentTintColor = .tertiaryLabelColor
+        advancedToggle.contentTintColor = .secondaryLabelColor
         advancedToggle.attributedTitle = NSAttributedString(
             string: "ADVANCED", attributes: [
-                .font: NSFont.systemFont(ofSize: 10, weight: .semibold),
-                .foregroundColor: NSColor.tertiaryLabelColor,
+                .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
+                .foregroundColor: NSColor.secondaryLabelColor,
                 .kern: 0.8,
             ])
         inspectorStack.addArrangedSubview(advancedToggle)
@@ -816,6 +971,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             adjustSliders[p.rawValue].doubleValue = Double(a[p])
             adjustResets[p.rawValue].isEnabled =
                 abs(a[p] - CGFloat(p.range.neutral)) >= 0.0001
+            adjustValueLabels[p.rawValue].stringValue = adjustValueText(p, a[p])
         }
         let selected = a.effect.flatMap { EffectPreset.allCases.firstIndex(of: $0) }.map { $0 + 1 } ?? 0
         for (i, button) in effectButtons.enumerated() {
@@ -863,6 +1019,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         canvas.setAdjustments(a)
         syncAdjustInspector()
         refreshChrome()
+        markDirty()
     }
 
     /// The background workspace: a left column, not another toolbar row —
@@ -893,19 +1050,9 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         for view in sidebarStack.arrangedSubviews {
             view.removeFromSuperview()
         }
+        fillSwatches.removeAll()
 
-        func eyebrow(_ text: String) -> NSTextField {
-            // Tracked-uppercase eyebrow, per the Sentry brand's section heads.
-            let label = NSTextField(labelWithString: "")
-            label.attributedStringValue = NSAttributedString(string: text, attributes: [
-                .font: NSFont.systemFont(ofSize: 10, weight: .semibold),
-                .foregroundColor: NSColor.tertiaryLabelColor,
-                .kern: 0.8,
-            ])
-            return label
-        }
-
-        func fillSwatch(_ tag: Int, tooltip: String) -> NSButton {
+        func fillSwatch(_ tag: Int, fill: AnnotatorBackgroundStyle.Fill?, tooltip: String) -> NSButton {
             let button = NSButton()
             button.title = ""
             button.isBordered = false
@@ -921,23 +1068,47 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             button.translatesAutoresizingMaskIntoConstraints = false
             button.widthAnchor.constraint(equalToConstant: 18).isActive = true
             button.heightAnchor.constraint(equalToConstant: 18).isActive = true
+            // Actionable swatches (a concrete fill) join the selection tracker;
+            // the custom-colour well (fill == nil) is an action, not a state.
+            if let fill { fillSwatches.append((fill, button)) }
             return button
         }
 
-        // Tags: 0 none, 1... solids, 100... gradients.
-        var swatches: [NSButton] = []
-        let none = fillSwatch(0, tooltip: "No background")
+        // Column title so the panel names itself — "Background", not just FILL.
+        let title = panelTitle("Background")
+        sidebarStack.addArrangedSubview(title)
+        sidebarStack.setCustomSpacing(10, after: title)
+
+        // The "None" control reads as chrome, not a colour — its own labelled
+        // row above the swatch grid keeps it from being mistaken for a swatch.
+        sidebarStack.addArrangedSubview(eyebrow("FILL"))
+        let none = fillSwatch(0, fill: AnnotatorBackgroundStyle.Fill.none, tooltip: "No background")
         none.image = NSImage(
             systemSymbolName: "slash.circle", accessibilityDescription: "No background")
         none.contentTintColor = .secondaryLabelColor
-        swatches.append(none)
+        let noneLabel = NSTextField(labelWithString: "None")
+        noneLabel.font = .systemFont(ofSize: 11)
+        noneLabel.textColor = .secondaryLabelColor
+        let noneRow = NSStackView(views: [none, noneLabel])
+        noneRow.orientation = .horizontal
+        noneRow.spacing = 6
+        sidebarStack.addArrangedSubview(noneRow)
+
+        // Tags: 1... model solids, 100... gradients, 200/201 extra solids,
+        // 202 custom-colour well.
+        var swatches: [NSButton] = []
         for (i, preset) in AnnotatorBackgroundStyle.solidPresets.enumerated() {
-            let swatch = fillSwatch(1 + i, tooltip: preset.name)
+            let swatch = fillSwatch(1 + i, fill: .solid(preset.colour), tooltip: preset.name)
             swatch.layer?.backgroundColor = preset.colour.cgColor
             swatches.append(swatch)
         }
+        for entry in Self.extraSolids {
+            let swatch = fillSwatch(entry.tag, fill: .solid(entry.colour), tooltip: entry.name)
+            swatch.layer?.backgroundColor = entry.colour.cgColor
+            swatches.append(swatch)
+        }
         for (i, preset) in AnnotatorBackgroundStyle.gradientPresets.enumerated() {
-            let swatch = fillSwatch(100 + i, tooltip: preset.name)
+            let swatch = fillSwatch(100 + i, fill: .gradient(i), tooltip: preset.name)
             let gradient = CAGradientLayer()
             gradient.frame = CGRect(x: 0, y: 0, width: 18, height: 18)
             gradient.cornerRadius = 9
@@ -947,8 +1118,21 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
             swatch.layer?.addSublayer(gradient)
             swatches.append(swatch)
         }
+        // Custom fill: the hue-wheel well opens the shared colour panel.
+        let customWell = fillSwatch(202, fill: nil, tooltip: "Custom colour…")
+        let wheel = CAGradientLayer()
+        wheel.type = .conic
+        wheel.frame = CGRect(x: 0, y: 0, width: 18, height: 18)
+        wheel.startPoint = CGPoint(x: 0.5, y: 0.5)
+        wheel.endPoint = CGPoint(x: 0.5, y: 0)
+        wheel.colors = stride(from: 0.0, through: 1.0, by: 1.0 / 6.0).map {
+            NSColor(hue: $0, saturation: 0.85, brightness: 1, alpha: 1).cgColor
+        }
+        wheel.cornerRadius = 9
+        wheel.masksToBounds = true
+        customWell.layer?.addSublayer(wheel)
+        swatches.append(customWell)
 
-        sidebarStack.addArrangedSubview(eyebrow("FILL"))
         for chunk in stride(from: 0, to: swatches.count, by: 6) {
             let row = NSStackView(views: Array(swatches[chunk..<min(chunk + 6, swatches.count)]))
             row.orientation = .horizontal
@@ -957,20 +1141,38 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         }
 
         func slider(
-            _ label: String, value: Double, min: Double, max: Double, action: Selector
-        ) {
-            sidebarStack.addArrangedSubview(eyebrow(label))
+            _ label: String, value: Double, min: Double, max: Double,
+            valueText: String, action: Selector
+        ) -> NSTextField {
+            let readout = NSTextField(labelWithString: valueText)
+            readout.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+            readout.textColor = .secondaryLabelColor
+            readout.alignment = .right
+            let spacer = NSView()
+            spacer.setContentHuggingPriority(.init(1), for: .horizontal)
+            let head = NSStackView(views: [eyebrow(label), spacer, readout])
+            head.orientation = .horizontal
+            head.spacing = 4
+            head.translatesAutoresizingMaskIntoConstraints = false
+            head.widthAnchor.constraint(equalToConstant: 162).isActive = true
+            sidebarStack.addArrangedSubview(head)
+            sidebarStack.setCustomSpacing(2, after: head)
             let control = NSSlider(value: value, minValue: min, maxValue: max,
                                    target: self, action: action)
             control.controlSize = .small
             control.translatesAutoresizingMaskIntoConstraints = false
             control.widthAnchor.constraint(equalToConstant: 162).isActive = true
             sidebarStack.addArrangedSubview(control)
+            return readout
         }
-        slider("PADDING", value: backgroundStyle.padding, min: 16, max: 140,
-               action: #selector(backgroundPaddingChanged(_:)))
-        slider("CORNERS", value: backgroundStyle.cornerRadius, min: 0, max: 28,
-               action: #selector(backgroundRadiusChanged(_:)))
+        paddingValueLabel = slider(
+            "PADDING", value: backgroundStyle.padding, min: 16, max: 140,
+            valueText: "\(Int(backgroundStyle.padding))px",
+            action: #selector(backgroundPaddingChanged(_:)))
+        cornersValueLabel = slider(
+            "CORNERS", value: backgroundStyle.cornerRadius, min: 0, max: 28,
+            valueText: "\(Int(backgroundStyle.cornerRadius))px",
+            action: #selector(backgroundRadiusChanged(_:)))
 
         let shadow = NSButton(
             checkboxWithTitle: "Shadow", target: self,
@@ -980,6 +1182,19 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         sidebarStack.addArrangedSubview(shadow)
         sidebarStack.setCustomSpacing(14, after: sidebarStack.arrangedSubviews[
             sidebarStack.arrangedSubviews.count - 2])
+        updateFillSelection()
+    }
+
+    /// Ring the swatch whose fill matches the live background, so the active
+    /// fill is visible at a glance and survives reopening the panel.
+    private func updateFillSelection() {
+        for (fill, button) in fillSwatches {
+            let selected = fill == backgroundStyle.fill
+            button.layer?.borderWidth = selected ? 2 : 1
+            button.layer?.borderColor = selected
+                ? HUDStyle.accent.cgColor
+                : NSColor.separatorColor.cgColor
+        }
     }
 
     // MARK: Options bar contents
@@ -1494,6 +1709,8 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         canvas.setAdjustments(a)
         adjustResets[sender.tag].isEnabled =
             abs(a[p] - CGFloat(p.range.neutral)) >= 0.0001
+        adjustValueLabels[sender.tag].stringValue = adjustValueText(p, a[p])
+        markDirty()
     }
 
     @objc private func adjustResetTapped(_ sender: NSButton) {
@@ -1502,11 +1719,13 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         a[p] = CGFloat(p.range.neutral)
         canvas.setAdjustments(a)
         syncAdjustInspector()
+        markDirty()
     }
 
     @objc private func adjustResetAllTapped() {
         canvas.setAdjustments(ImageAdjustments())
         syncAdjustInspector()
+        markDirty()
     }
 
     /// Auto lands as ordinary slider values — the inspector shows exactly
@@ -1519,6 +1738,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         canvas.setAdjustments(auto)
         syncAdjustInspector()
         refreshChrome()
+        markDirty()
         window.makeFirstResponder(canvas)
     }
 
@@ -1592,6 +1812,12 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         switch sender.tag {
         case 0:
             backgroundStyle.fill = .none
+        case 202:
+            openBackgroundColorPanel()
+        case 200, 201:
+            if let entry = Self.extraSolids.first(where: { $0.tag == sender.tag }) {
+                backgroundStyle.fill = .solid(entry.colour)
+            }
         case 1..<100:
             backgroundStyle.fill = .solid(
                 AnnotatorBackgroundStyle.solidPresets[sender.tag - 1].colour)
@@ -1600,12 +1826,30 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         }
     }
 
+    /// Arbitrary background fill via the shared colour panel (eyedropper
+    /// included) — the beautify palette a couple of presets can't cover.
+    private func openBackgroundColorPanel() {
+        let panel = NSColorPanel.shared
+        panel.showsAlpha = false
+        panel.isContinuous = true
+        if case .solid(let c) = backgroundStyle.fill { panel.color = c }
+        panel.setTarget(self)
+        panel.setAction(#selector(backgroundColorPanelChanged(_:)))
+        panel.makeKeyAndOrderFront(nil)
+    }
+
+    @objc private func backgroundColorPanelChanged(_ sender: NSColorPanel) {
+        backgroundStyle.fill = .solid(sender.color)
+    }
+
     @objc private func backgroundPaddingChanged(_ sender: NSSlider) {
         backgroundStyle.padding = CGFloat(sender.doubleValue)
+        paddingValueLabel?.stringValue = "\(Int(sender.doubleValue.rounded()))px"
     }
 
     @objc private func backgroundRadiusChanged(_ sender: NSSlider) {
         backgroundStyle.cornerRadius = CGFloat(sender.doubleValue)
+        cornersValueLabel?.stringValue = "\(Int(sender.doubleValue.rounded()))px"
     }
 
     @objc private func backgroundShadowChanged(_ sender: NSButton) {
@@ -1694,6 +1938,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
                 }
             }
         }
+        isDirty = false
         Toast.show("Saved", symbol: "square.and.arrow.down")
     }
 
@@ -1724,6 +1969,7 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
                        symbol: "exclamationmark.triangle")
             return
         }
+        isDirty = false
         Toast.show(
             target == url ? "Saved" : "Saved as \(target.lastPathComponent)",
             symbol: "square.and.arrow.down")
@@ -1855,6 +2101,21 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
         window.setFrame(frame, display: true)
         window.contentView?.layoutSubtreeIfNeeded()
         zoomOutToFitIfNeeded()
+        // Growing/shrinking the viewport leaves the old scroll offset behind,
+        // jamming the image to one side behind the opposite panel — re-centre
+        // the document in the new clip so it stays put.
+        recenterDocument()
+    }
+
+    /// Scroll so the backdrop sits centred in the (inset-adjusted) viewport.
+    private func recenterDocument() {
+        let visible = scrollView.documentVisibleRect.size
+        let doc = backdrop.frame.size
+        let origin = NSPoint(
+            x: (doc.width - visible.width) / 2,
+            y: (doc.height - visible.height) / 2)
+        scrollView.contentView.scroll(to: origin)
+        scrollView.reflectScrolledClipView(scrollView.contentView)
     }
 
     private func zoom(by factor: CGFloat) {

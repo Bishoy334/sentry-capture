@@ -14,42 +14,80 @@ final class OutputRouter {
 
     // MARK: Delivery (the after-capture pipeline)
 
+    /// A scrolling composite (many stitched screen-heights) is large enough
+    /// that a single PNG/JPEG encode costs seconds. Above this pixel count the
+    /// encode moves off the main thread behind a busy toast so the menu bar,
+    /// overlays and open windows stay responsive; smaller captures encode
+    /// inline (imperceptible) to keep delivery instant.
+    private static let heavyEncodePixels = 10_000_000
+
     func deliver(_ still: StillCapture) {
         let settings = Settings.shared
         if settings.playSound { playCaptureSound() }
 
+        // "Every sink off" still persists — a capture that goes nowhere is lost.
+        let persist = settings.saveToDisk
+            || (!settings.copyToClipboard && !settings.showQuickAccess)
+        let persistFormat: ImageFormat? = persist
+            ? (still.hasAlpha ? .png : settings.imageFormat)
+            : nil
+        let needClipboardPNG = settings.copyToClipboard
+
+        // Heavy composites encode off-main so the seconds-long encode doesn't
+        // freeze the app with no feedback; everything after the bytes exist
+        // (record write, clipboard, QAO) still runs back on the main thread.
+        if still.image.width * still.image.height > Self.heavyEncodePixels,
+           persistFormat != nil || needClipboardPNG {
+            Toast.show("Processing capture…", symbol: "hourglass", duration: 4.0)
+            let image = still.image
+            let scale = still.scale
+            let downscaleRetina = settings.downscaleRetina
+            DispatchQueue.global(qos: .userInitiated).async {
+                let encoded = Self.encode(
+                    image: image, scale: scale, downscaleRetina: downscaleRetina,
+                    persistFormat: persistFormat, needClipboardPNG: needClipboardPNG)
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        self.finishDeliver(
+                            still, persistFormat: persistFormat, persist: encoded.persist,
+                            clipboardPNG: encoded.clipboardPNG, settings: settings)
+                    }
+                }
+            }
+            return
+        }
+
+        let encoded = Self.encode(
+            image: still.image, scale: still.scale, downscaleRetina: settings.downscaleRetina,
+            persistFormat: persistFormat, needClipboardPNG: needClipboardPNG)
+        finishDeliver(
+            still, persistFormat: persistFormat, persist: encoded.persist,
+            clipboardPNG: encoded.clipboardPNG, settings: settings)
+    }
+
+    /// The tail of `deliver(_:)` — runs on the main thread with the pixels
+    /// already encoded (inline for small stills, off-main for composites).
+    private func finishDeliver(
+        _ still: StillCapture, persistFormat: ImageFormat?,
+        persist persistData: Data?, clipboardPNG: Data?, settings: Settings
+    ) {
         var still = still
         var delivered = DeliveredCapture(payload: .still(still), fileURL: nil)
         // Persist before copying: the pasteboard's file-URL representation
         // must point at a file that already exists or Finder paste breaks.
-        // When both sinks want PNG, encode once and share the bytes — a
-        // scrolling composite costs seconds per encode.
-        var sharedPNG: Data?
-        // "Every sink off" still persists — a capture that goes nowhere is lost.
-        let persist = settings.saveToDisk
-            || (!settings.copyToClipboard && !settings.showQuickAccess)
-        if persist {
-            let format: ImageFormat = still.hasAlpha ? .png : settings.imageFormat
-            let data: Data?
-            if format == .png {
-                sharedPNG = encode(still, format: .png)
-                data = sharedPNG
-            } else {
-                data = encode(still, format: format)
-            }
-            if let data, let record = SentryStore.shared.createStillRecord(
-                still, data: data,
-                fileName: nextFileName(ext: format.fileExtension, appName: still.origin?.appName),
-                mimeType: format.mimeType
-            ) {
-                still.recordID = record.id
-                delivered = DeliveredCapture(
-                    payload: .still(still), fileURL: record.mediaURL, recordID: record.id)
-                addRecent(record.mediaURL)
-            }
+        if let format = persistFormat, let data = persistData,
+           let record = SentryStore.shared.createStillRecord(
+               still, data: data,
+               fileName: nextFileName(ext: format.fileExtension, appName: still.origin?.appName),
+               mimeType: format.mimeType
+           ) {
+            still.recordID = record.id
+            delivered = DeliveredCapture(
+                payload: .still(still), fileURL: record.mediaURL, recordID: record.id)
+            addRecent(record.mediaURL)
         }
         if settings.copyToClipboard {
-            copyToClipboard(still, fileURL: delivered.fileURL, pngData: sharedPNG)
+            copyToClipboard(still, fileURL: delivered.fileURL, pngData: clipboardPNG)
         }
         if settings.showQuickAccess {
             QuickAccessOverlay.shared.push(delivered)
@@ -219,13 +257,22 @@ final class OutputRouter {
     }
 
     func encode(_ still: StillCapture, format: ImageFormat) -> Data? {
-        var image = still.image
-        var scale = still.scale
-        if Settings.shared.downscaleRetina, still.scale > 1 {
-            if let smaller = Self.downscale(image, by: still.scale) {
-                image = smaller
-                scale = 1
-            }
+        Self.encode(
+            image: still.image, scale: still.scale,
+            downscaleRetina: Settings.shared.downscaleRetina, format: format)
+    }
+
+    /// Off-main-safe encoder. Pure function of its inputs (the downscale flag
+    /// is read on the main thread and passed in) so the delivery pipeline can
+    /// run a heavy composite encode on a background queue.
+    nonisolated static func encode(
+        image: CGImage, scale: CGFloat, downscaleRetina: Bool, format: ImageFormat
+    ) -> Data? {
+        var image = image
+        var scale = scale
+        if downscaleRetina, scale > 1, let smaller = downscale(image, by: scale) {
+            image = smaller
+            scale = 1
         }
         let type: UTType = format == .png ? .png : .jpeg
         let data = NSMutableData()
@@ -244,6 +291,26 @@ final class OutputRouter {
         CGImageDestinationAddImage(dest, image, props as CFDictionary)
         guard CGImageDestinationFinalize(dest) else { return nil }
         return data as Data
+    }
+
+    /// Produces the bytes the delivery pipeline needs in one pass: the persist
+    /// encoding (in the record's format) and, when the clipboard is a sink, a
+    /// PNG for the pasteboard — reusing the persist bytes when it is already
+    /// PNG so a composite encodes at most twice, never three times.
+    nonisolated static func encode(
+        image: CGImage, scale: CGFloat, downscaleRetina: Bool,
+        persistFormat: ImageFormat?, needClipboardPNG: Bool
+    ) -> (persist: Data?, clipboardPNG: Data?) {
+        let persist = persistFormat.flatMap {
+            encode(image: image, scale: scale, downscaleRetina: downscaleRetina, format: $0)
+        }
+        var clipboardPNG: Data?
+        if needClipboardPNG {
+            clipboardPNG = persistFormat == .png
+                ? persist
+                : encode(image: image, scale: scale, downscaleRetina: downscaleRetina, format: .png)
+        }
+        return (persist, clipboardPNG)
     }
 
     nonisolated private static func downscale(_ image: CGImage, by scale: CGFloat) -> CGImage? {
