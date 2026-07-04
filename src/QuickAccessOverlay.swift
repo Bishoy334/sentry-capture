@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import CoreImage
 import UniformTypeIdentifiers
 
 /// Floating post-capture cards stacked in the bottom-left corner of the
@@ -209,11 +210,11 @@ final class QuickAccessOverlay {
 /// without a trip to the menu-bar icon.
 @MainActor
 private final class QAOChevronPanel: NSPanel {
-    static let width: CGFloat = 124
-    static let height: CGFloat = 28
+    static let width: CGFloat = 138
+    static let height: CGFloat = 26
 
     private let onToggle: () -> Void
-    private let toggleButton = NSButton()
+    private let toggleButton = QAOSegmentButton()
 
     init(onToggle: @escaping () -> Void) {
         self.onToggle = onToggle
@@ -236,45 +237,50 @@ private final class QAOChevronPanel: NSPanel {
         // the pill reading as chrome, matching the all-in-one strip.
         let wash = NSView()
         wash.wantsLayer = true
-        wash.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.38).cgColor
-        wash.translatesAutoresizingMaskIntoConstraints = false
+        wash.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.5).cgColor
+        wash.frame = NSRect(x: 0, y: 0, width: Self.width, height: Self.height)
+        wash.autoresizingMask = [.width, .height]
         card.addSubview(wash)
 
-        toggleButton.isBordered = false
-        toggleButton.setButtonType(.momentaryChange)
-        toggleButton.contentTintColor = .white
-        toggleButton.target = self
-        toggleButton.action = #selector(tapped)
-
-        let library = QAOIconButton(
-            symbol: "square.grid.2x2", tooltip: "Open capture library",
-            target: self, action: #selector(libraryTapped), size: 24, symbolSize: 12)
-        let capture = QAOIconButton(
-            symbol: "viewfinder", tooltip: "New capture",
-            target: self, action: #selector(captureTapped), size: 24, symbolSize: 12)
-
-        for view in [toggleButton, library, capture] {
-            view.translatesAutoresizingMaskIntoConstraints = false
-            card.addSubview(view)
+        // True segmented pill: three equal cells, glyphs dead-centred in
+        // each, hover fills the whole cell to the pill's edge. No floating
+        // button backgrounds to clip against the capsule.
+        let cellWidth = Self.width / 3
+        let radius = Self.height / 2
+        func configure(_ button: QAOSegmentButton, index: Int, symbol: String, tooltip: String, action: Selector) {
+            button.isBordered = false
+            button.setButtonType(.momentaryChange)
+            button.imagePosition = .imageOnly
+            button.alignment = .center
+            button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: tooltip)?
+                .withSymbolConfiguration(.init(pointSize: 11, weight: .regular))
+            button.contentTintColor = NSColor.white.withAlphaComponent(0.85)
+            button.toolTip = tooltip
+            button.target = self
+            button.action = action
+            button.frame = NSRect(
+                x: CGFloat(index) * cellWidth, y: 0, width: cellWidth, height: Self.height)
+            button.wantsLayer = true
+            // End cells round with the capsule so the hover fill hugs it.
+            button.layer?.cornerRadius = index == 1 ? 0 : radius
+            button.layer?.maskedCorners = index == 0
+                ? [.layerMinXMinYCorner, .layerMinXMaxYCorner]
+                : (index == 2 ? [.layerMaxXMinYCorner, .layerMaxXMaxYCorner] : [])
+            card.addSubview(button)
         }
-        NSLayoutConstraint.activate([
-            wash.leadingAnchor.constraint(equalTo: card.leadingAnchor),
-            wash.trailingAnchor.constraint(equalTo: card.trailingAnchor),
-            wash.topAnchor.constraint(equalTo: card.topAnchor),
-            wash.bottomAnchor.constraint(equalTo: card.bottomAnchor),
-            toggleButton.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 10),
-            toggleButton.widthAnchor.constraint(equalToConstant: 44),
-            toggleButton.topAnchor.constraint(equalTo: card.topAnchor),
-            toggleButton.bottomAnchor.constraint(equalTo: card.bottomAnchor),
-            capture.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -8),
-            capture.centerYAnchor.constraint(equalTo: card.centerYAnchor),
-            capture.widthAnchor.constraint(equalToConstant: 24),
-            capture.heightAnchor.constraint(equalToConstant: 24),
-            library.trailingAnchor.constraint(equalTo: capture.leadingAnchor, constant: -6),
-            library.centerYAnchor.constraint(equalTo: card.centerYAnchor),
-            library.widthAnchor.constraint(equalToConstant: 24),
-            library.heightAnchor.constraint(equalToConstant: 24),
-        ])
+        configure(toggleButton, index: 0, symbol: "chevron.down",
+                  tooltip: "Hide captures", action: #selector(tapped))
+        configure(QAOSegmentButton(), index: 1, symbol: "square.grid.2x2",
+                  tooltip: "Open capture library", action: #selector(libraryTapped))
+        configure(QAOSegmentButton(), index: 2, symbol: "viewfinder",
+                  tooltip: "New capture", action: #selector(captureTapped))
+
+        for x in [cellWidth, cellWidth * 2] {
+            let line = NSView(frame: NSRect(x: x, y: 5, width: 1, height: Self.height - 10))
+            line.wantsLayer = true
+            line.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.12).cgColor
+            card.addSubview(line)
+        }
         contentView = card
         setCollapsed(false)
     }
@@ -283,15 +289,16 @@ private final class QAOChevronPanel: NSPanel {
         toggleButton.image = NSImage(
             systemSymbolName: collapsed ? "chevron.up" : "chevron.down",
             accessibilityDescription: collapsed ? "Show captures" : "Hide captures")?
-            .withSymbolConfiguration(.init(pointSize: 12, weight: .bold))
-        toggleButton.contentTintColor = .white
+            .withSymbolConfiguration(.init(pointSize: 11, weight: .regular))
+        toggleButton.contentTintColor = NSColor.white.withAlphaComponent(0.85)
         // Collapsed, the strip is all that remains — advertise the hidden
-        // stack with a count instead of a bare, meaningless chevron.
+        // stack with a count. imageLeading + centre alignment keeps the
+        // glyph+count composite centred in the cell, not shoved sideways.
         if collapsed && count > 0 {
             toggleButton.imagePosition = .imageLeading
             toggleButton.attributedTitle = NSAttributedString(string: " \(count)", attributes: [
-                .foregroundColor: NSColor.white,
-                .font: NSFont.systemFont(ofSize: 11, weight: .bold)])
+                .foregroundColor: NSColor.white.withAlphaComponent(0.85),
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)])
         } else {
             toggleButton.imagePosition = .imageOnly
             toggleButton.title = ""
@@ -311,6 +318,30 @@ private final class QAOChevronPanel: NSPanel {
 
     @objc private func captureTapped() {
         (NSApp.delegate as? AppDelegate)?.dispatch(.captureArea)
+    }
+}
+
+/// Pre-renders the frosted (blurred) hover copy of a card thumbnail.
+private enum QAOBlur {
+    nonisolated static func frosted(_ image: NSImage) -> NSImage? {
+        guard let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            return nil
+        }
+        var ci = CIImage(cgImage: cg)
+        // The card is ~200pt wide; blur a downscaled copy, not 5K pixels.
+        let scale = min(1, 480 / max(ci.extent.width, 1))
+        if scale < 1 {
+            ci = ci.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        }
+        let extent = ci.extent
+        // Clamp so the blur doesn't pull in transparent black at the edges.
+        let blurred = ci.clampedToExtent()
+            .applyingGaussianBlur(sigma: 10)
+            .cropped(to: extent)
+        guard let out = ImagePipeline.ciContext.createCGImage(blurred, from: extent) else {
+            return nil
+        }
+        return NSImage(cgImage: out, size: .zero)
     }
 }
 
@@ -438,6 +469,7 @@ private final class QAOCardView: NSView, NSDraggingSource, NSTextFieldDelegate {
 
     private let scrim = QAOScrimView()
     private var saveButton: QAOIconButton?
+    private let blurImageView = QAOStaticImageView(frame: .zero)
     private let captionBand = QAOCaptionBand(frame: .zero)
     private let captionName = QAORenameField(labelWithString: "")
     private var videoMetaText: String?
@@ -464,9 +496,9 @@ private final class QAOCardView: NSView, NSDraggingSource, NSTextFieldDelegate {
         if let thumbnail, thumbnail.size.width > 0 {
             height = width * thumbnail.size.height / thumbnail.size.width
         }
-        // Floor guarantees room for the icon rails — panoramas letterbox on
-        // the blur instead of starving the controls.
-        height = min(max(height, 118), 165)
+        // Floor guarantees room for the three-row icon columns — panoramas
+        // letterbox on the blur instead of starving the controls.
+        height = min(max(height, 126), 165)
         super.init(frame: NSRect(x: 0, y: 0, width: width, height: height + Self.captionHeight))
         build(video: video)
 
@@ -527,25 +559,41 @@ private final class QAOCardView: NSView, NSDraggingSource, NSTextFieldDelegate {
         }
         buildCaption(in: effect)
 
-        // The scrim dims the image on hover; the action buttons ride it.
+        // Hover frosts the image (pre-blurred copy fades in — a visual-effect
+        // view can only blur what's BEHIND the window, not this image).
+        blurImageView.frame = thumbArea
+        blurImageView.autoresizingMask = [.width, .height]
+        blurImageView.imageScaling = .scaleProportionallyUpOrDown
+        blurImageView.alphaValue = 0
+        effect.addSubview(blurImageView)
+        if let thumbnail {
+            Task.detached(priority: .utility) { [weak self] in
+                let blurred = QAOBlur.frosted(thumbnail)
+                await MainActor.run { [weak self] in
+                    self?.blurImageView.image = blurred
+                }
+            }
+        }
+
+        // Gentle wash under the light discs; the blur does the separating.
         scrim.frame = bounds
         scrim.autoresizingMask = [.width, .height]
         scrim.wantsLayer = true
-        scrim.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.28).cgColor
+        scrim.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.18).cgColor
         scrim.alphaValue = 0
         effect.addSubview(scrim)
 
-        // Big readable hover actions: primaries down the left edge,
-        // secondaries (pin, more) down the right, close in the corner.
+        // Six identical light discs, two symmetric columns on shared rows:
+        // Copy/Folder/Annotate left, Close/Pin/More right.
         var left: [QAOIconButton] = [
             QAOIconButton(
                 symbol: "doc.on.doc", tooltip: "Copy", target: self,
-                action: #selector(copyAction), size: 32, symbolSize: 15),
+                action: #selector(copyAction), size: 32, symbolSize: 14),
         ]
         let save = QAOIconButton(
             symbol: item.fileURL == nil ? "arrow.down.circle" : "folder",
             tooltip: item.fileURL == nil ? "Save" : "Reveal in Finder",
-            target: self, action: #selector(saveOrRevealAction), size: 32, symbolSize: 15)
+            target: self, action: #selector(saveOrRevealAction), size: 32, symbolSize: 14)
         saveButton = save
         left.append(save)
         if isStill {
@@ -556,43 +604,38 @@ private final class QAOCardView: NSView, NSDraggingSource, NSTextFieldDelegate {
         if isEditableVideo {
             left.append(QAOIconButton(
                 symbol: "scissors", tooltip: "Edit", target: self,
-                action: #selector(editVideoAction), size: 32, symbolSize: 15))
+                action: #selector(editVideoAction), size: 32, symbolSize: 14))
         }
-        var right: [QAOIconButton] = []
+        var right: [QAOIconButton] = [
+            QAOIconButton(
+                symbol: "xmark", tooltip: "Close", target: self,
+                action: #selector(closeAction), size: 32, symbolSize: 13),
+        ]
         if isStill {
             right.append(QAOIconButton(
                 symbol: "pin", tooltip: "Pin", target: self,
-                action: #selector(pinAction), size: 32, symbolSize: 15))
+                action: #selector(pinAction), size: 32, symbolSize: 14))
         }
         // Every hidden action (OCR, Send to, Convert, Move to Bin) also lives
         // in the right-click menu; this keeps that menu discoverable.
         right.append(QAOIconButton(
-            symbol: "ellipsis.circle", tooltip: "More…", target: self,
-            action: #selector(moreActions(_:)), size: 32, symbolSize: 15))
+            symbol: "ellipsis", tooltip: "More…", target: self,
+            action: #selector(moreActions(_:)), size: 32, symbolSize: 14))
 
         let side: CGFloat = 32
-        let gap: CGFloat = 6
-        // reservedTop keeps the right column clear of the close button.
-        func place(_ column: [QAOIconButton], x: CGFloat, reservedTop: CGFloat, mask: NSView.AutoresizingMask) {
-            let total = CGFloat(column.count) * side + CGFloat(column.count - 1) * gap
-            var y = Self.captionHeight + (thumbArea.height - reservedTop - total) / 2
-            for button in column.reversed() {
+        let gap: CGFloat = 10
+        let total = 3 * side + 2 * gap
+        let baseY = Self.captionHeight + (thumbArea.height - total) / 2
+        func place(_ column: [QAOIconButton], x: CGFloat, mask: NSView.AutoresizingMask) {
+            for (row, button) in column.enumerated() {
+                let y = baseY + CGFloat(2 - row) * (side + gap)
                 button.frame = NSRect(x: x, y: y, width: side, height: side)
                 button.autoresizingMask = mask.union([.minYMargin, .maxYMargin])
                 scrim.addSubview(button)
-                y += side + gap
             }
         }
-        place(left, x: 10, reservedTop: 0, mask: [.maxXMargin])
-        place(right, x: bounds.width - 10 - side, reservedTop: 26, mask: [.minXMargin])
-
-        let close = QAOIconButton(
-            symbol: "xmark", tooltip: "Close", target: self, action: #selector(closeAction),
-            size: 22, symbolSize: 11, cornerRadius: 11)
-        close.frame = NSRect(
-            x: scrim.bounds.width - 28, y: scrim.bounds.height - 28, width: 22, height: 22)
-        close.autoresizingMask = [.minXMargin, .minYMargin]
-        scrim.addSubview(close)
+        place(left, x: 12, mask: [.maxXMargin])
+        place(right, x: bounds.width - 12 - side, mask: [.minXMargin])
     }
 
     /// Slim bottom band: just the capture's name, editable in place.
@@ -753,7 +796,9 @@ private final class QAOCardView: NSView, NSDraggingSource, NSTextFieldDelegate {
         captionBand.setHighlighted(hovering && collapsed)
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.15
-            scrim.animator().alphaValue = (hovering && !collapsed) ? 1 : 0
+            let on: CGFloat = (hovering && !collapsed) ? 1 : 0
+            scrim.animator().alphaValue = on
+            blurImageView.animator().alphaValue = on
         }
     }
 
@@ -1177,9 +1222,34 @@ private final class QAOCaptionBand: NSView {
     }
 }
 
+/// A cell of the corner pill: bare glyph at rest, the whole cell fills on
+/// hover (maskedCorners lets end cells round with the capsule).
+private final class QAOSegmentButton: NSButton {
+    override func updateTrackingAreas() {
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(
+            rect: .zero,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self, userInfo: nil))
+        super.updateTrackingAreas()
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func mouseEntered(with event: NSEvent) {
+        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.14).cgColor
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        layer?.backgroundColor = nil
+    }
+}
+
+/// Card hover action: CleanShot-style light disc with a dark glyph — reads
+/// against any image, unlike white-on-translucent-white.
 private final class QAOIconButton: NSButton {
-    private static let restBackground = NSColor.white.withAlphaComponent(0.10).cgColor
-    private static let hoverBackground = NSColor.white.withAlphaComponent(0.24).cgColor
+    private static let restBackground = NSColor.white.withAlphaComponent(0.92).cgColor
+    private static let hoverBackground = NSColor.white.cgColor
 
     init(
         symbol: String, tooltip: String, target: AnyObject, action: Selector,
@@ -1189,14 +1259,18 @@ private final class QAOIconButton: NSButton {
         isBordered = false
         imagePosition = .imageOnly
         setSymbol(symbol, tooltip: tooltip, symbolSize: symbolSize)
-        contentTintColor = .white
+        contentTintColor = NSColor.black.withAlphaComponent(0.82)
         self.target = target
         self.action = action
         wantsLayer = true
-        // A persistent circular container so the glyphs read as tap targets at
-        // rest, not watermark decoration; hover just brightens it.
         layer?.cornerRadius = cornerRadius ?? size / 2
         layer?.backgroundColor = Self.restBackground
+        // Float above the blurred image on anything bright.
+        layer?.masksToBounds = false
+        layer?.shadowColor = NSColor.black.cgColor
+        layer?.shadowOpacity = 0.25
+        layer?.shadowRadius = 3
+        layer?.shadowOffset = CGSize(width: 0, height: -1)
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
