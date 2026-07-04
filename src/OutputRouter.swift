@@ -329,29 +329,41 @@ final class OutputRouter {
 
     // MARK: Filenames
 
-    /// The prefix doubles as a template: {date} {time} {app} {counter}
-    /// tokens expand when present; a plain prefix keeps the classic
-    /// "Prefix yyyy-MM-dd at HH.mm.ss" shape. The untouched factory default
-    /// gets smart names instead: the captured window's title (or app name)
-    /// says WHAT was captured — "Setup Cockpit Monitor Stand at 21.47.png"
-    /// beats a wall of identical prefixes with only a timestamp changing.
+    /// The untouched factory default names by WHAT was captured — the window
+    /// title (or app name) then a sortable timestamp, e.g.
+    /// "About Our Returns Policies_2026-07-05_08-25-05.png". A grab with no
+    /// single source window (e.g. multi-display fullscreen) falls back to a
+    /// plain stamped name. A custom prefix with {date} {time} {app} {title}
+    /// {counter} tokens overrides this; any other plain prefix keeps the
+    /// classic "Prefix yyyy-MM-dd at HH.mm.ss" shape.
+    static let defaultTemplate = "Sentry-Capture_{date}_{time}"
+
     func nextFileName(ext: String, origin: CaptureOrigin? = nil) -> String {
         let template = Settings.shared.filenamePrefix
         let appName = origin?.appName
         let fmt = DateFormatter()
         var name: String
-        if template == "Sentry Capture", let smart = Self.smartNameStem(origin) {
+        if template == Self.defaultTemplate {
+            fmt.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+            let stamp = fmt.string(from: Date())
+            if let smart = Self.smartNameStem(origin) {
+                name = "\(smart)_\(stamp)"
+            } else {
+                name = "Sentry-Capture_\(stamp)"
+            }
+        } else if template == "Sentry Capture", let smart = Self.smartNameStem(origin) {
             fmt.dateFormat = "HH.mm"
             name = "\(smart) at \(fmt.string(from: Date()))"
         } else if template.contains("{") {
             fmt.dateFormat = "yyyy-MM-dd"
             let date = fmt.string(from: Date())
-            fmt.dateFormat = "HH.mm.ss"
+            fmt.dateFormat = "HH-mm-ss"
             let time = fmt.string(from: Date())
             name = template
                 .replacingOccurrences(of: "{date}", with: date)
                 .replacingOccurrences(of: "{time}", with: time)
                 .replacingOccurrences(of: "{app}", with: appName ?? "")
+                .replacingOccurrences(of: "{title}", with: Self.smartNameStem(origin) ?? "")
             if name.contains("{counter}") {
                 let counter = UserDefaults.standard.integer(forKey: "filenameCounter") + 1
                 UserDefaults.standard.set(counter, forKey: "filenameCounter")

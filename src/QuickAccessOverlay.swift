@@ -12,7 +12,11 @@ final class QuickAccessOverlay {
     static let shared = QuickAccessOverlay()
 
     private static let maxCards = 5
-    private static let margin: CGFloat = 16
+    /// Gap from the screen's side edge — roomier than the bottom gap so the
+    /// stack doesn't read as glued to the bezel.
+    private static let edgeMargin: CGFloat = 32
+    /// Gap above the bottom of the visible frame (dock/menu-bar safe area).
+    private static let bottomMargin: CGFloat = 16
     private static let gap: CGFloat = 8
 
     /// Newest first — index 0 sits nearest the corner.
@@ -73,15 +77,31 @@ final class QuickAccessOverlay {
         }
         cards.insert(panel, at: 0)
         // A fresh capture always reveals the stack — that's what it's for.
+        if overlayHidden { toggleOverlayHidden() }
         if stackHidden { setStackHidden(false) }
         layout(entering: panel)
         armAutoClose(panel)
     }
 
+    /// ⌘1: hide/show the entire overlay — cards AND the corner pill — in one
+    /// press. Distinct from the pill's own chevron (which slides the cards
+    /// away but keeps the pill as the way back).
+    private var overlayHidden = false
+    func toggleOverlayHidden() {
+        overlayHidden.toggle()
+        if overlayHidden {
+            for panel in cards { panel.orderOut(nil) }
+            chevron?.orderOut(nil)
+        } else {
+            for panel in cards where !stackHidden { panel.orderFrontRegardless() }
+            updateChevron()
+        }
+    }
+
     fileprivate func setStackHidden(_ hidden: Bool) {
         guard stackHidden != hidden else { return }
         stackHidden = hidden
-        chevron?.setCollapsed(hidden, count: cards.count)
+        chevron?.setCollapsed(hidden)
         if hidden {
             for panel in cards {
                 NSAnimationContext.runAnimationGroup({ context in
@@ -151,13 +171,13 @@ final class QuickAccessOverlay {
             let visible = screen.visibleFrame
             // The chevron pill owns the corner itself; cards stack above it.
             let y = cursors[screen.displayID]
-                ?? (visible.minY + Self.margin + QAOChevronPanel.height + Self.gap)
+                ?? (visible.minY + Self.bottomMargin + QAOChevronPanel.height + Self.gap)
             let size = panel.isCollapsed
                 ? NSSize(width: panel.fullSize.width, height: QAOCardPanel.collapsedHeight)
                 : panel.fullSize
             let x = rightCorner
-                ? visible.maxX - Self.margin - size.width
-                : visible.minX + Self.margin
+                ? visible.maxX - Self.edgeMargin - size.width
+                : visible.minX + Self.edgeMargin
             targets.append((panel, NSRect(x: x, y: y, width: size.width, height: size.height)))
             cursors[screen.displayID] = y + size.height + Self.gap
         }
@@ -191,14 +211,15 @@ final class QuickAccessOverlay {
             }
         }
         let visible = screen.visibleFrame
-        // Centre the pill under the card column so it reads as the stack's base.
+        // Centre the pill under the card column — derive from the same card x
+        // the stack uses so the two can never drift.
         let cardWidth = cards.first?.fullSize.width ?? 220
-        let inset = max(0, (cardWidth - QAOChevronPanel.width) / 2)
-        let x = Settings.shared.qaoCorner == "bottomRight"
-            ? visible.maxX - Self.margin - cardWidth + inset
-            : visible.minX + Self.margin + inset
-        chevron?.setFrameOrigin(NSPoint(x: x, y: visible.minY + Self.margin))
-        chevron?.setCollapsed(stackHidden, count: cards.count)
+        let cardX = Settings.shared.qaoCorner == "bottomRight"
+            ? visible.maxX - Self.edgeMargin - cardWidth
+            : visible.minX + Self.edgeMargin
+        let x = cardX + (cardWidth - QAOChevronPanel.width) / 2
+        chevron?.setFrameOrigin(NSPoint(x: x, y: visible.minY + Self.bottomMargin))
+        chevron?.setCollapsed(stackHidden)
         chevron?.orderFrontRegardless()
     }
 }
@@ -285,27 +306,17 @@ private final class QAOChevronPanel: NSPanel {
         setCollapsed(false)
     }
 
-    func setCollapsed(_ collapsed: Bool, count: Int = 0) {
+    func setCollapsed(_ collapsed: Bool) {
+        // Just swap the chevron direction — no count badge (it shoved the
+        // glyph off-centre and looked broken).
         toggleButton.image = NSImage(
             systemSymbolName: collapsed ? "chevron.up" : "chevron.down",
             accessibilityDescription: collapsed ? "Show captures" : "Hide captures")?
             .withSymbolConfiguration(.init(pointSize: 11, weight: .regular))
         toggleButton.contentTintColor = NSColor.white.withAlphaComponent(0.85)
-        // Collapsed, the strip is all that remains — advertise the hidden
-        // stack with a count. imageLeading + centre alignment keeps the
-        // glyph+count composite centred in the cell, not shoved sideways.
-        if collapsed && count > 0 {
-            toggleButton.imagePosition = .imageLeading
-            toggleButton.attributedTitle = NSAttributedString(string: " \(count)", attributes: [
-                .foregroundColor: NSColor.white.withAlphaComponent(0.85),
-                .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)])
-        } else {
-            toggleButton.imagePosition = .imageOnly
-            toggleButton.title = ""
-        }
-        toggleButton.toolTip = collapsed
-            ? "Show \(count) capture\(count == 1 ? "" : "s")"
-            : "Hide captures"
+        toggleButton.imagePosition = .imageOnly
+        toggleButton.title = ""
+        toggleButton.toolTip = collapsed ? "Show captures" : "Hide captures"
     }
 
     @objc private func tapped() {

@@ -32,6 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.menu = menu
 
         registerHotkeys()
+        applyScreenshotShortcutOverride()
         NotificationCenter.default.addObserver(
             forName: Settings.changed, object: nil, queue: .main
         ) { [weak self] _ in
@@ -57,6 +58,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         HotkeyManager.shared.registerAll { [weak self] action in
             self?.dispatch(action)
         }
+    }
+
+    /// Own ⌘⇧3/4/5: disable the built-in macOS screenshot shortcuts so they
+    /// fire Sentry Capture instead of double-firing. The menu toggle restores.
+    private func applyScreenshotShortcutOverride() {
+        SystemScreenshotShortcuts.setSystemEnabled(!Settings.shared.useMacScreenshotHotkeys)
     }
 
     /// An accessory app has no menu bar by default, but Cmd-key editing
@@ -169,6 +176,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: Dispatch
 
     func dispatch(_ action: HotkeyAction) {
+        // Pure-UI actions skip the capture gates below — hiding the overlay
+        // or opening the library must work mid-recording, mid-selection, and
+        // without the Screen Recording permission.
+        switch action {
+        case .toggleOverlay:
+            QuickAccessOverlay.shared.toggleOverlayHidden()
+            return
+        case .captureLibrary:
+            HistoryController.shared.show()
+            return
+        default:
+            break
+        }
         // Recording hotkey doubles as stop. Gate on isBusy, not isRecording:
         // during the countdown / stream spin-up window isRecording is still
         // false, and starting a second flow there records our own selection
@@ -193,6 +213,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         switch action {
+        case .toggleOverlay, .captureLibrary:
+            break   // pure-UI — handled before the gates above
         case .pauseRecording:
             break   // only meaningful while recording — handled in the gate above
         case .allInOne:
@@ -429,6 +451,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(item("Open Captures Folder", #selector(openCapturesFolder), key: ""))
         menu.addItem(item("Clean Up Clipboard Image", #selector(cleanClipboard), key: ""))
         menu.addItem(item("Batch Convert Images…", #selector(batchConvert), key: ""))
+        let macKeys = item(
+            "Use macOS Screenshot Keys (⌘⇧3/4/5)",
+            #selector(toggleMacScreenshotKeys), key: "")
+        macKeys.state = Settings.shared.useMacScreenshotHotkeys ? .on : .off
+        menu.addItem(macKeys)
         menu.addItem(.separator())
         menu.addItem(item("Settings…", #selector(showPreferences), key: ","))
         menu.addItem(item("Quit Sentry Capture", #selector(quit), key: "q"))
@@ -484,6 +511,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func togglePins() {
         PinController.shared.toggleAllHidden()
+    }
+
+    @objc private func toggleMacScreenshotKeys() {
+        Settings.shared.useMacScreenshotHotkeys.toggle()
+        applyScreenshotShortcutOverride()
+        let on = Settings.shared.useMacScreenshotHotkeys
+        Toast.show(
+            on ? "⌘⇧3/4/5 now open Sentry Capture" : "macOS screenshot shortcuts restored",
+            symbol: on ? "camera.viewfinder" : "arrow.uturn.backward")
     }
 
     @objc private func unlockPins() {

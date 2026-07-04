@@ -1,6 +1,6 @@
 # Sentry Capture
 
-Native macOS screenshot + screen-recording app — the Sentry family's CleanShot X. Menu-bar only, no cloud, no Electron.
+Native macOS screenshot + screen-recording app, part of the Sentry ecosystem. Replaces the built-in macOS screenshot tools. Menu-bar only, no cloud, no Electron.
 
 - Area / window / fullscreen capture (ScreenCaptureKit)
 - Quick-access overlay: floating post-capture thumbnail — copy, save, annotate, pin, drag out

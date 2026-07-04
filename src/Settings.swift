@@ -47,6 +47,8 @@ final class Settings: ObservableObject {
     /// OCR recognition language; empty = automatic detection.
     @Published var ocrLanguage: String
     @Published var hotkeys: [HotkeyAction: Hotkey?]
+    /// Own ⌘⇧3/4/5 by disabling the built-in macOS screenshot shortcuts.
+    @Published var useMacScreenshotHotkeys: Bool
 
     var saveDirectory: URL {
         URL(fileURLWithPath: (saveDirectoryPath as NSString).expandingTildeInPath, isDirectory: true)
@@ -67,6 +69,17 @@ final class Settings: ObservableObject {
     private var sinks: Set<AnyCancellable> = []
 
     private init() {
+        // One-time v1 migration: adopt macOS-style screenshot shortcuts
+        // (⌘⇧3/4/5), a bottom-right overlay, and dev-friendly timestamp
+        // filenames on installs that predate them. Clearing "hotkeys" makes the
+        // loader fall back to the new defaultHotkey values.
+        if d.integer(forKey: "settingsVersion") < 1 {
+            d.removeObject(forKey: "hotkeys")
+            d.set("bottomRight", forKey: "qaoCorner")
+            d.set("Sentry-Capture_{date}_{time}", forKey: "filenamePrefix")
+            d.set(1, forKey: "settingsVersion")
+        }
+
         // ~/Sentry/ is the ecosystem root — captures are records other Sentry
         // apps read (see SENTRY_SCHEMA.md). One-shot migration from the
         // round-1 Desktop default; a later deliberate choice of ~/Desktop
@@ -77,12 +90,12 @@ final class Settings: ObservableObject {
         }
         d.set(true, forKey: "migratedToSentryRoot")
         saveDirectoryPath = storedPath
-        filenamePrefix = d.string(forKey: "filenamePrefix") ?? "Sentry Capture"
+        filenamePrefix = d.string(forKey: "filenamePrefix") ?? "Sentry-Capture_{date}_{time}"
         imageFormat = ImageFormat(rawValue: d.string(forKey: "imageFormat") ?? "") ?? .png
         copyToClipboard = d.object(forKey: "copyToClipboard") as? Bool ?? true
         saveToDisk = d.object(forKey: "saveToDisk") as? Bool ?? true
         showQuickAccess = d.object(forKey: "showQuickAccess") as? Bool ?? true
-        qaoCorner = d.string(forKey: "qaoCorner") ?? "bottomLeft"
+        qaoCorner = d.string(forKey: "qaoCorner") ?? "bottomRight"
         qaoAutoCloseSeconds = d.object(forKey: "qaoAutoCloseSeconds") as? Int ?? 0
         playSound = d.object(forKey: "playSound") as? Bool ?? true
         downscaleRetina = d.object(forKey: "downscaleRetina") as? Bool ?? false
@@ -103,6 +116,7 @@ final class Settings: ObservableObject {
         selfTimerSeconds = d.object(forKey: "selfTimerSeconds") as? Int ?? 5
         retentionDays = d.object(forKey: "retentionDays") as? Int ?? 0
         ocrLanguage = d.string(forKey: "ocrLanguage") ?? ""
+        useMacScreenshotHotkeys = d.object(forKey: "useMacScreenshotHotkeys") as? Bool ?? true
 
         var loaded: [HotkeyAction: Hotkey?] = [:]
         let stored = (try? JSONDecoder().decode(
@@ -157,6 +171,7 @@ final class Settings: ObservableObject {
         d.set(selfTimerSeconds, forKey: "selfTimerSeconds")
         d.set(retentionDays, forKey: "retentionDays")
         d.set(ocrLanguage, forKey: "ocrLanguage")
+        d.set(useMacScreenshotHotkeys, forKey: "useMacScreenshotHotkeys")
         let encodable = Dictionary(uniqueKeysWithValues: hotkeys.map { ($0.key.rawValue, $0.value) })
         if let data = try? JSONEncoder().encode(encodable) {
             d.set(data, forKey: "hotkeys")

@@ -124,6 +124,8 @@ enum HotkeyAction: String, CaseIterable, Codable {
     case colourPicker
     case measure
     case checkContrast
+    case toggleOverlay
+    case captureLibrary
 
     var title: String {
         switch self {
@@ -141,18 +143,22 @@ enum HotkeyAction: String, CaseIterable, Codable {
         case .colourPicker: return "Colour Picker"
         case .measure: return "Measure"
         case .checkContrast: return "Check Contrast"
+        case .toggleOverlay: return "Hide/Show Overlay"
+        case .captureLibrary: return "Open Capture Library"
         }
     }
 
     var defaultHotkey: Hotkey? {
-        // Option-Command family: clear of the system's Cmd-Shift-3/4/5, and
-        // avoids the macOS 15+ bug where Option-only / Option-Shift-only
-        // hotkeys never fire (FB15168205).
+        // Screenshot family mirrors macOS — ⌘⇧3 full screen, ⌘⇧4 area,
+        // ⌘⇧5 all-in-one — and the built-in shortcuts are disabled in their
+        // favour (see SystemScreenshotShortcuts). Everything else stays on the
+        // Option-Command family, which dodges the macOS 15+ bug where
+        // Option-only / Option-Shift-only hotkeys never fire (FB15168205).
         switch self {
-        case .allInOne: return Hotkey(keyCode: UInt32(kVK_ANSI_1), carbonModifiers: optionCmd)
+        case .allInOne: return Hotkey(keyCode: UInt32(kVK_ANSI_5), carbonModifiers: cmdShift)
         case .copyText: return Hotkey(keyCode: UInt32(kVK_ANSI_2), carbonModifiers: optionCmd)
-        case .captureFullscreen: return Hotkey(keyCode: UInt32(kVK_ANSI_3), carbonModifiers: optionCmd)
-        case .captureArea: return Hotkey(keyCode: UInt32(kVK_ANSI_4), carbonModifiers: optionCmd)
+        case .captureFullscreen: return Hotkey(keyCode: UInt32(kVK_ANSI_3), carbonModifiers: cmdShift)
+        case .captureArea: return Hotkey(keyCode: UInt32(kVK_ANSI_4), carbonModifiers: cmdShift)
         case .captureWindow: return Hotkey(keyCode: UInt32(kVK_ANSI_5), carbonModifiers: optionCmd)
         case .scrollingCapture: return Hotkey(keyCode: UInt32(kVK_ANSI_6), carbonModifiers: optionCmd)
         case .recordVideo: return Hotkey(keyCode: UInt32(kVK_ANSI_7), carbonModifiers: optionCmd)
@@ -160,12 +166,16 @@ enum HotkeyAction: String, CaseIterable, Codable {
         case .colourPicker: return Hotkey(keyCode: UInt32(kVK_ANSI_9), carbonModifiers: optionCmd)
         case .measure: return Hotkey(keyCode: UInt32(kVK_ANSI_0), carbonModifiers: optionCmd)
         case .pauseRecording: return Hotkey(keyCode: UInt32(kVK_ANSI_P), carbonModifiers: optionCmd)
+        case .toggleOverlay: return Hotkey(keyCode: UInt32(kVK_ANSI_1), carbonModifiers: cmdOnly)
+        case .captureLibrary: return Hotkey(keyCode: UInt32(kVK_ANSI_2), carbonModifiers: cmdOnly)
         case .recordGIF, .timedCapture, .checkContrast: return nil
         }
     }
 }
 
 private let optionCmd = UInt32(optionKey | cmdKey)
+private let cmdShift = UInt32(shiftKey | cmdKey)
+private let cmdOnly = UInt32(cmdKey)
 
 struct Hotkey: Codable, Equatable {
     var keyCode: UInt32
