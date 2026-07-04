@@ -199,17 +199,18 @@ final class QuickAccessOverlay {
     }
 }
 
-// MARK: - Stack chevron
+// MARK: - Corner control strip
 
-/// Tiny pill under the stack: chevron-down slides the cards off-screen,
-/// chevron-up brings them back.
+/// Pill that owns the screen corner under the stack. More than a hide/show
+/// chevron: it opens the capture library and starts a new capture, so the
+/// corner works without a trip to the menu-bar icon.
 @MainActor
 private final class QAOChevronPanel: NSPanel {
-    static let width: CGFloat = 44
-    static let height: CGFloat = 20
+    static let width: CGFloat = 116
+    static let height: CGFloat = 24
 
     private let onToggle: () -> Void
-    private let button = NSButton()
+    private let toggleButton = NSButton()
 
     init(onToggle: @escaping () -> Void) {
         self.onToggle = onToggle
@@ -228,43 +229,74 @@ private final class QAOChevronPanel: NSPanel {
 
         let card = HUDStyle.card()
         card.layer?.cornerRadius = Self.height / 2
-        button.isBordered = false
-        button.setButtonType(.momentaryChange)
-        button.imagePosition = .imageOnly
-        button.contentTintColor = NSColor.white.withAlphaComponent(0.75)
-        button.target = self
-        button.action = #selector(tapped)
-        button.frame = NSRect(x: 0, y: 0, width: Self.width, height: Self.height)
-        button.autoresizingMask = [.width, .height]
-        card.addSubview(button)
+
+        toggleButton.isBordered = false
+        toggleButton.setButtonType(.momentaryChange)
+        toggleButton.contentTintColor = .white
+        toggleButton.target = self
+        toggleButton.action = #selector(tapped)
+
+        let library = QAOIconButton(
+            symbol: "square.grid.2x2", tooltip: "Open capture library",
+            target: self, action: #selector(libraryTapped), size: 20, symbolSize: 10)
+        let capture = QAOIconButton(
+            symbol: "viewfinder", tooltip: "New capture",
+            target: self, action: #selector(captureTapped), size: 20, symbolSize: 10)
+
+        for view in [toggleButton, library, capture] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            card.addSubview(view)
+        }
+        NSLayoutConstraint.activate([
+            toggleButton.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 8),
+            toggleButton.widthAnchor.constraint(equalToConstant: 44),
+            toggleButton.topAnchor.constraint(equalTo: card.topAnchor),
+            toggleButton.bottomAnchor.constraint(equalTo: card.bottomAnchor),
+            capture.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -4),
+            capture.centerYAnchor.constraint(equalTo: card.centerYAnchor),
+            capture.widthAnchor.constraint(equalToConstant: 20),
+            capture.heightAnchor.constraint(equalToConstant: 20),
+            library.trailingAnchor.constraint(equalTo: capture.leadingAnchor, constant: -4),
+            library.centerYAnchor.constraint(equalTo: card.centerYAnchor),
+            library.widthAnchor.constraint(equalToConstant: 20),
+            library.heightAnchor.constraint(equalToConstant: 20),
+        ])
         contentView = card
         setCollapsed(false)
     }
 
     func setCollapsed(_ collapsed: Bool, count: Int = 0) {
-        button.image = NSImage(
+        toggleButton.image = NSImage(
             systemSymbolName: collapsed ? "chevron.up" : "chevron.down",
             accessibilityDescription: collapsed ? "Show captures" : "Hide captures")?
-            .withSymbolConfiguration(.init(pointSize: 13, weight: .bold))
-        button.contentTintColor = .white
-        // Collapsed, the pill is the only remaining control — advertise the
-        // hidden stack with a count instead of a bare, meaningless chevron.
+            .withSymbolConfiguration(.init(pointSize: 12, weight: .bold))
+        toggleButton.contentTintColor = .white
+        // Collapsed, the strip is all that remains — advertise the hidden
+        // stack with a count instead of a bare, meaningless chevron.
         if collapsed && count > 0 {
-            button.imagePosition = .imageLeading
-            button.attributedTitle = NSAttributedString(string: " \(count)", attributes: [
+            toggleButton.imagePosition = .imageLeading
+            toggleButton.attributedTitle = NSAttributedString(string: " \(count)", attributes: [
                 .foregroundColor: NSColor.white,
                 .font: NSFont.systemFont(ofSize: 11, weight: .bold)])
         } else {
-            button.imagePosition = .imageOnly
-            button.title = ""
+            toggleButton.imagePosition = .imageOnly
+            toggleButton.title = ""
         }
-        button.toolTip = collapsed
+        toggleButton.toolTip = collapsed
             ? "Show \(count) capture\(count == 1 ? "" : "s")"
             : "Hide captures"
     }
 
     @objc private func tapped() {
         onToggle()
+    }
+
+    @objc private func libraryTapped() {
+        HistoryController.shared.show()
+    }
+
+    @objc private func captureTapped() {
+        (NSApp.delegate as? AppDelegate)?.dispatch(.captureArea)
     }
 }
 
@@ -365,12 +397,17 @@ private final class QAOCardPanel: NSPanel {
         animationBehavior = .none
         contentView = cardView
     }
+
+    /// Borderless panels refuse key status by default — the inline rename
+    /// field needs it (and becomesKeyOnlyIfNeeded keeps everything else
+    /// click-through as before).
+    override var canBecomeKey: Bool { true }
 }
 
 // MARK: - Card view
 
 @MainActor
-private final class QAOCardView: NSView, NSDraggingSource {
+private final class QAOCardView: NSView, NSDraggingSource, NSTextFieldDelegate {
     var onDismiss: (() -> Void)?
     var currentItem: DeliveredCapture { item }
 
@@ -410,7 +447,9 @@ private final class QAOCardView: NSView, NSDraggingSource {
         if let thumbnail, thumbnail.size.width > 0 {
             height = width * thumbnail.size.height / thumbnail.size.width
         }
-        height = min(max(height, 70), 140)
+        // Floor guarantees room for the edge action columns — panoramas
+        // letterbox on the blur instead of starving the controls.
+        height = min(max(height, 112), 140)
         super.init(frame: NSRect(x: 0, y: 0, width: width, height: height + Self.captionHeight))
         build(video: video)
 
@@ -480,7 +519,9 @@ private final class QAOCardView: NSView, NSDraggingSource {
         scrim.alphaValue = 0
         effect.addSubview(scrim)
 
-        var buttons: [QAOIconButton] = [
+        // Actions ride the card's edges (primary column left, secondary
+        // right) so the hover row never blankets the image being acted on.
+        var left: [QAOIconButton] = [
             QAOIconButton(symbol: "doc.on.doc", tooltip: "Copy", target: self, action: #selector(copyAction)),
         ]
         let save = QAOIconButton(
@@ -488,32 +529,40 @@ private final class QAOCardView: NSView, NSDraggingSource {
             tooltip: item.fileURL == nil ? "Save" : "Reveal in Finder",
             target: self, action: #selector(saveOrRevealAction))
         saveButton = save
-        buttons.append(save)
+        left.append(save)
         if isStill {
-            buttons.append(QAOIconButton(
+            left.append(QAOIconButton(
                 symbol: "pencil.and.outline", tooltip: "Annotate", target: self, action: #selector(annotateAction)))
-            buttons.append(QAOIconButton(
-                symbol: "pin", tooltip: "Pin", target: self, action: #selector(pinAction)))
         }
         if isEditableVideo {
-            buttons.append(QAOIconButton(
+            left.append(QAOIconButton(
                 symbol: "scissors", tooltip: "Edit", target: self, action: #selector(editVideoAction)))
+        }
+        var right: [QAOIconButton] = []
+        if isStill {
+            right.append(QAOIconButton(
+                symbol: "pin", tooltip: "Pin", target: self, action: #selector(pinAction)))
         }
         // Every hidden action (OCR, Send to, Convert, Move to Bin) also lives in
         // the right-click menu; this makes that same menu discoverable.
-        buttons.append(QAOIconButton(
+        right.append(QAOIconButton(
             symbol: "ellipsis.circle", tooltip: "More…", target: self, action: #selector(moreActions(_:))))
+
         let side: CGFloat = 28
-        let gap: CGFloat = 10
-        let total = CGFloat(buttons.count) * side + CGFloat(buttons.count - 1) * gap
-        var x = (bounds.width - total) / 2
-        let buttonY = Self.captionHeight + (thumbArea.height - side) / 2
-        for button in buttons {
-            button.frame = NSRect(x: x, y: buttonY, width: side, height: side)
-            button.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin, .maxYMargin]
-            scrim.addSubview(button)
-            x += side + gap
+        let gap: CGFloat = 8
+        // reservedTop keeps the right column clear of the close button.
+        func place(_ column: [QAOIconButton], x: CGFloat, reservedTop: CGFloat, mask: NSView.AutoresizingMask) {
+            let total = CGFloat(column.count) * side + CGFloat(column.count - 1) * gap
+            var y = Self.captionHeight + (thumbArea.height - reservedTop - total) / 2
+            for button in column.reversed() {
+                button.frame = NSRect(x: x, y: y, width: side, height: side)
+                button.autoresizingMask = mask.union([.minYMargin, .maxYMargin])
+                scrim.addSubview(button)
+                y += side + gap
+            }
         }
+        place(left, x: 8, reservedTop: 0, mask: [.maxXMargin])
+        place(right, x: bounds.width - 8 - side, reservedTop: 24, mask: [.minXMargin])
 
         let close = QAOIconButton(
             symbol: "xmark", tooltip: "Close", target: self, action: #selector(closeAction),
@@ -524,13 +573,23 @@ private final class QAOCardView: NSView, NSDraggingSource {
         scrim.addSubview(close)
     }
 
-    /// Bottom band: filename (or save state) left, dimensions/duration right —
-    /// what this card is, without hovering.
+    /// Bottom band: capture name left (click to rename), dimensions/size/type
+    /// right — what this card is, without hovering.
     private func buildCaption(in effect: NSView) {
         let band = captionBand
         band.frame = NSRect(x: 0, y: 0, width: bounds.width, height: Self.captionHeight)
         band.autoresizingMask = [.width, .maxYMargin]
+        band.clickTarget = captionName
+        band.clickEnabled = { [weak self] in
+            guard let self, let panel = self.window as? QAOCardPanel else { return false }
+            return !panel.isCollapsed && self.item.fileURL != nil
+        }
 
+        captionName.isBordered = false
+        captionName.drawsBackground = false
+        captionName.focusRingType = .none
+        captionName.usesSingleLineMode = true
+        captionName.delegate = self
         captionName.font = .systemFont(ofSize: 10, weight: .medium)
         captionName.textColor = NSColor.white.withAlphaComponent(0.85)
         captionName.lineBreakMode = .byTruncatingMiddle
@@ -566,8 +625,15 @@ private final class QAOCardView: NSView, NSDraggingSource {
     }
 
     private func refreshCaption() {
-        captionName.stringValue = relativeTimeString()
-        captionName.toolTip = item.fileURL?.lastPathComponent ?? "Not saved yet"
+        if let url = item.fileURL {
+            captionName.stringValue = url.deletingPathExtension().lastPathComponent
+            captionName.isEditable = true
+            captionName.toolTip = "\(relativeTimeString()) · click to rename"
+        } else {
+            captionName.stringValue = "Not saved"
+            captionName.isEditable = false
+            captionName.toolTip = relativeTimeString()
+        }
         switch item.payload {
         case .still(let still):
             var meta = "\(still.image.width)×\(still.image.height)"
@@ -582,6 +648,58 @@ private final class QAOCardView: NSView, NSDraggingSource {
         case .video:
             captionMeta.stringValue = videoMetaText ?? ""
         }
+    }
+
+    // MARK: Inline rename
+
+    func controlTextDidBeginEditing(_ obj: Notification) {
+        (captionName.currentEditor() as? NSTextView)?.insertionPointColor = .white
+    }
+
+    func controlTextDidEndEditing(_ obj: Notification) {
+        commitRename()
+    }
+
+    func control(
+        _ control: NSControl, textView: NSTextView, doCommandBy selector: Selector
+    ) -> Bool {
+        if selector == #selector(NSResponder.cancelOperation(_:)) {
+            refreshCaption()
+            window?.makeFirstResponder(nil)
+            return true
+        }
+        return false
+    }
+
+    /// Renames the file on disk (and the record's manifest when there is
+    /// one), keeping Recents pointed at the new URL.
+    private func commitRename() {
+        defer { window?.makeFirstResponder(nil) }
+        guard let url = item.fileURL else { refreshCaption(); return }
+        let stem = captionName.stringValue
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: ".")
+        guard !stem.isEmpty, stem != url.deletingPathExtension().lastPathComponent else {
+            refreshCaption()
+            return
+        }
+        let newName = "\(stem).\(url.pathExtension)"
+        let newURL: URL?
+        if let id = item.recordID {
+            newURL = SentryStore.shared.renameMedia(recordID: id, to: newName)
+        } else {
+            let dest = url.deletingLastPathComponent().appendingPathComponent(newName)
+            newURL = (try? FileManager.default.moveItem(at: url, to: dest)) != nil ? dest : nil
+        }
+        guard let newURL else {
+            Toast.show("Could not rename", symbol: "exclamationmark.triangle")
+            refreshCaption()
+            return
+        }
+        OutputRouter.shared.replaceRecent(url, with: newURL)
+        item = DeliveredCapture(payload: item.payload, fileURL: newURL, recordID: item.recordID)
+        refreshCaption()
     }
 
     // MARK: Hover
@@ -975,8 +1093,12 @@ private final class QAOStaticImageView: NSImageView {
 }
 
 /// Caption strip along the card's bottom edge; clicks and drags fall through
-/// to the card.
+/// to the card — except on the name label, which is click-to-rename when the
+/// card is expanded and saved.
 private final class QAOCaptionBand: NSView {
+    weak var clickTarget: NSView?
+    var clickEnabled: () -> Bool = { false }
+
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
@@ -994,7 +1116,11 @@ private final class QAOCaptionBand: NSView {
         }
     }
 
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard clickEnabled(), let clickTarget else { return nil }
+        let local = convert(point, from: superview)
+        return clickTarget.frame.insetBy(dx: -4, dy: -3).contains(local) ? clickTarget : nil
+    }
 }
 
 private final class QAOIconButton: NSButton {

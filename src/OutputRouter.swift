@@ -78,7 +78,7 @@ final class OutputRouter {
         if let format = persistFormat, let data = persistData,
            let record = SentryStore.shared.createStillRecord(
                still, data: data,
-               fileName: nextFileName(ext: format.fileExtension, appName: still.origin?.appName),
+               fileName: nextFileName(ext: format.fileExtension, origin: still.origin),
                mimeType: format.mimeType
            ) {
             still.recordID = record.id
@@ -100,7 +100,7 @@ final class OutputRouter {
         // Recordings always land in the store: move from the temp location.
         if let record = SentryStore.shared.createVideoRecord(
             tempURL: video.url,
-            fileName: nextFileName(ext: video.isGIF ? "gif" : "mp4"),
+            fileName: nextFileName(ext: video.isGIF ? "gif" : "mp4", origin: video.origin),
             isGIF: video.isGIF,
             origin: video.origin,
             durationSeconds: video.durationSeconds
@@ -331,12 +331,19 @@ final class OutputRouter {
 
     /// The prefix doubles as a template: {date} {time} {app} {counter}
     /// tokens expand when present; a plain prefix keeps the classic
-    /// "Prefix yyyy-MM-dd at HH.mm.ss" shape.
-    func nextFileName(ext: String, appName: String? = nil) -> String {
+    /// "Prefix yyyy-MM-dd at HH.mm.ss" shape. The untouched factory default
+    /// gets smart names instead: the captured window's title (or app name)
+    /// says WHAT was captured — "Setup Cockpit Monitor Stand at 21.47.png"
+    /// beats a wall of identical prefixes with only a timestamp changing.
+    func nextFileName(ext: String, origin: CaptureOrigin? = nil) -> String {
         let template = Settings.shared.filenamePrefix
+        let appName = origin?.appName
         let fmt = DateFormatter()
         var name: String
-        if template.contains("{") {
+        if template == "Sentry Capture", let smart = Self.smartNameStem(origin) {
+            fmt.dateFormat = "HH.mm"
+            name = "\(smart) at \(fmt.string(from: Date()))"
+        } else if template.contains("{") {
             fmt.dateFormat = "yyyy-MM-dd"
             let date = fmt.string(from: Date())
             fmt.dateFormat = "HH.mm.ss"
@@ -365,6 +372,18 @@ final class OutputRouter {
             .replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: ":", with: ".")
         return "\(name).\(ext)"
+    }
+
+    /// Window title (what was captured) beats app name (what was frontmost);
+    /// both trimmed to something a Finder column can show.
+    private static func smartNameStem(_ origin: CaptureOrigin?) -> String? {
+        guard let origin else { return nil }
+        var stem = origin.windowTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if stem.isEmpty { stem = origin.appName?.trimmingCharacters(in: .whitespaces) ?? "" }
+        guard !stem.isEmpty else { return nil }
+        stem = stem.components(separatedBy: .newlines).first ?? stem
+        if stem.count > 60 { stem = String(stem.prefix(60)).trimmingCharacters(in: .whitespaces) }
+        return stem
     }
 
     func nextFileURL(ext: String) -> URL {
@@ -427,6 +446,14 @@ final class OutputRouter {
     func removeRecent(_ url: URL) {
         recents.removeAll { $0 == url }
         onRecentsChanged?()
+    }
+
+    /// A rename keeps the capture's place in the Recents menu.
+    func replaceRecent(_ old: URL, with new: URL) {
+        if let index = recents.firstIndex(of: old) {
+            recents[index] = new
+            onRecentsChanged?()
+        }
     }
 
     // MARK: Sound

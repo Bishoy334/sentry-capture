@@ -206,7 +206,7 @@ private struct PrefsScreenshotsPane: View {
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     TextField("Filename prefix", text: $settings.filenamePrefix)
-                    Text("Tokens: {date} {time} {app} {counter} — e.g. \"{app} {date} {counter}\"")
+                    Text("Default names captures after the window or app (\"Setup Guide at 21.47\"). Set a plain prefix for the classic shape, or tokens: {date} {time} {app} {counter}")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }

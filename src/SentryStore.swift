@@ -248,6 +248,27 @@ final class SentryStore {
         }
     }
 
+    /// Rename the record's media file in place (QAO inline rename). Returns
+    /// the new URL, or nil when the move fails (name collision, gone, …).
+    func renameMedia(recordID: String, to newFileName: String) -> URL? {
+        let dir = recordDirectory(for: recordID)
+        guard let manifest = loadManifest(in: dir) else { return nil }
+        let old = dir.appendingPathComponent(manifest.media.path)
+        let new = dir.appendingPathComponent(newFileName)
+        guard old != new else { return old }
+        do {
+            try FileManager.default.moveItem(at: old, to: new)
+        } catch {
+            NSLog("rename failed: \(error)")
+            return nil
+        }
+        amendManifest(id: recordID) {
+            $0.media.path = newFileName
+            $0.modifiedAt = Self.timestamp()
+        }
+        return new
+    }
+
     func amendManifest(id: String, _ mutate: (inout SentryManifest) -> Void) {
         let dir = recordDirectory(for: id)
         guard var manifest = loadManifest(in: dir) else { return }
