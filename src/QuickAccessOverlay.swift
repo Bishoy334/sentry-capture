@@ -24,7 +24,22 @@ final class QuickAccessOverlay {
 
     var canRestore: Bool { !recentlyClosed.isEmpty }
 
-    private init() {}
+    private init() {
+        // Displays come and go (monitor sleep/unplug). homeScreen already
+        // falls back to the main screen while a card's display is missing —
+        // this re-lays-out so cards actually move there and move back when
+        // the display returns, instead of stranding at stale coordinates.
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil, queue: .main
+        ) { _ in
+            MainActor.assumeIsolated {
+                let overlay = QuickAccessOverlay.shared
+                guard !overlay.cards.isEmpty, !overlay.stackHidden else { return }
+                overlay.layout(entering: nil)
+            }
+        }
+    }
 
     func restoreLastClosed() {
         guard let item = recentlyClosed.popLast() else { return }

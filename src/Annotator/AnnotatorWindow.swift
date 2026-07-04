@@ -1802,6 +1802,11 @@ final class AnnotatorWindowController: NSObject, NSWindowDelegate {
                 backgroundStyle.fill = .gradient(0)
             }
             rebuildBackgroundSidebar()
+        } else {
+            // The button reads as "background on/off", not "panel open/close":
+            // a deliberate reclick switches the background itself off. Fills
+            // picked in the panel survive everything except this reclick.
+            backgroundStyle.fill = .none
         }
         sidebarWidth.constant = backgroundBarActive ? 190 : 0
         panelWidthChanged(by: backgroundBarActive ? 190 : -190)

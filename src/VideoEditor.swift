@@ -953,24 +953,67 @@ private final class VideoCropOverlay: NSView {
             width: crop.width * v.width, height: crop.height * v.height)
     }
 
+    /// Same chrome as the annotator's crop (drawCropOverlay): 0.45 dim,
+    /// rule-of-thirds guides, corner brackets + edge bars — one crop look
+    /// across the image and video editors.
     override func draw(_ dirtyRect: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
         let v = videoRect
         let r = cropViewRect
-        ctx.setFillColor(NSColor.black.withAlphaComponent(0.55).cgColor)
+        ctx.setFillColor(NSColor.black.withAlphaComponent(0.45).cgColor)
         ctx.addRect(v)
         ctx.addRect(r)
         ctx.fillPath(using: .evenOdd)
+
+        ctx.setStrokeColor(NSColor.white.withAlphaComponent(0.18).cgColor)
+        ctx.setLineWidth(1)
+        for f in [1.0 / 3.0, 2.0 / 3.0] {
+            let x = r.minX + r.width * f
+            let y = r.minY + r.height * f
+            ctx.move(to: CGPoint(x: x, y: r.minY))
+            ctx.addLine(to: CGPoint(x: x, y: r.maxY))
+            ctx.move(to: CGPoint(x: r.minX, y: y))
+            ctx.addLine(to: CGPoint(x: r.maxX, y: y))
+        }
+        ctx.strokePath()
+
         ctx.setStrokeColor(NSColor.white.cgColor)
         ctx.setLineWidth(1)
         ctx.stroke(r)
-        for (_, p) in AnnotatorHit.rectHandles(r) {
-            let square = CGRect(x: p.x - 4, y: p.y - 4, width: 8, height: 8)
-            ctx.setFillColor(NSColor.white.cgColor)
-            ctx.setStrokeColor(HUDStyle.accent.cgColor)
-            ctx.fill(square)
-            ctx.stroke(square)
+
+        let arm = min(18, r.width / 3, r.height / 3)
+        let thick: CGFloat = 3
+        ctx.setLineWidth(thick)
+        ctx.setLineCap(.square)
+        let o = r.insetBy(dx: -thick / 2, dy: -thick / 2)
+        let corners: [(CGPoint, CGPoint, CGPoint)] = [
+            (CGPoint(x: o.minX, y: o.minY + arm), CGPoint(x: o.minX, y: o.minY), CGPoint(x: o.minX + arm, y: o.minY)),
+            (CGPoint(x: o.maxX - arm, y: o.minY), CGPoint(x: o.maxX, y: o.minY), CGPoint(x: o.maxX, y: o.minY + arm)),
+            (CGPoint(x: o.maxX, y: o.maxY - arm), CGPoint(x: o.maxX, y: o.maxY), CGPoint(x: o.maxX - arm, y: o.maxY)),
+            (CGPoint(x: o.minX + arm, y: o.maxY), CGPoint(x: o.minX, y: o.maxY), CGPoint(x: o.minX, y: o.maxY - arm)),
+        ]
+        for (a, corner, b) in corners {
+            ctx.move(to: a)
+            ctx.addLine(to: corner)
+            ctx.addLine(to: b)
         }
+        ctx.strokePath()
+
+        let bar = min(14, r.width / 3, r.height / 3)
+        ctx.setLineWidth(thick)
+        for (handle, p) in AnnotatorHit.rectHandles(r) {
+            switch handle {
+            case .top, .bottom:
+                ctx.move(to: CGPoint(x: p.x - bar / 2, y: p.y))
+                ctx.addLine(to: CGPoint(x: p.x + bar / 2, y: p.y))
+            case .left, .right:
+                ctx.move(to: CGPoint(x: p.x, y: p.y - bar / 2))
+                ctx.addLine(to: CGPoint(x: p.x, y: p.y + bar / 2))
+            default:
+                continue
+            }
+        }
+        ctx.strokePath()
     }
 
     override func mouseDown(with event: NSEvent) {

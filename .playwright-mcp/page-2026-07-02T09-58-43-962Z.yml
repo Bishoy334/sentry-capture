@@ -1,0 +1,671 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - complementary [ref=e3]:
+      - generic [ref=e4]:
+        - link [ref=e7] [cursor=pointer]:
+          - /url: /
+          - img [ref=e8]
+        - button "Search K" [ref=e25] [cursor=pointer]:
+          - img [ref=e27]
+          - generic [ref=e32]: Search
+          - generic [ref=e34]:
+            - img [ref=e35]
+            - text: K
+        - navigation [ref=e37]:
+          - link "Explore" [ref=e38] [cursor=pointer]:
+            - /url: /
+            - img [ref=e40]
+            - generic [ref=e45]: Explore
+          - link "Articles" [ref=e46] [cursor=pointer]:
+            - /url: /articles
+            - img [ref=e48]
+            - generic [ref=e53]: Articles
+          - link "Collections" [ref=e54] [cursor=pointer]:
+            - /url: /collections
+            - img [ref=e56]
+            - generic [ref=e61]: Collections
+        - button "Libraries" [ref=e64] [cursor=pointer]:
+          - generic [ref=e65]: Libraries
+          - img [ref=e67]
+        - generic [ref=e69]:
+          - generic [ref=e71]:
+            - button "Tools" [ref=e72] [cursor=pointer]:
+              - generic [ref=e73]: Tools
+            - button [ref=e75] [cursor=pointer]:
+              - img [ref=e76]
+          - generic [ref=e83]:
+            - link "Design 554" [ref=e84] [cursor=pointer]:
+              - /url: /design
+              - img [ref=e86]
+              - generic [ref=e93]: Design
+              - generic [ref=e94]: "554"
+            - link "AI 303" [ref=e95] [cursor=pointer]:
+              - /url: /ai
+              - img [ref=e97]
+              - generic [ref=e102]: AI
+              - generic [ref=e103]: "303"
+            - link "No-Code 133" [ref=e104] [cursor=pointer]:
+              - /url: /no-code
+              - img [ref=e106]
+              - generic [ref=e113]: No-Code
+              - generic [ref=e114]: "133"
+            - link "Plugins & Extensions 181" [ref=e115] [cursor=pointer]:
+              - /url: /plugins-and-extensions
+              - img [ref=e117]
+              - generic [ref=e121]: Plugins & Extensions
+              - generic [ref=e122]: "181"
+            - link "Business Operations 185" [ref=e123] [cursor=pointer]:
+              - /url: /business-operations
+              - img [ref=e125]
+              - generic [ref=e130]: Business Operations
+              - generic [ref=e131]: "185"
+            - link "Marketing 207" [ref=e132] [cursor=pointer]:
+              - /url: /marketing
+              - img [ref=e134]
+              - generic [ref=e138]: Marketing
+              - generic [ref=e139]: "207"
+            - link "Video 102" [ref=e140] [cursor=pointer]:
+              - /url: /video
+              - img [ref=e142]
+              - generic [ref=e147]: Video
+              - generic [ref=e148]: "102"
+            - link "E-Commerce 40" [ref=e149] [cursor=pointer]:
+              - /url: /e-commerce
+              - img [ref=e151]
+              - generic [ref=e155]: E-Commerce
+              - generic [ref=e156]: "40"
+            - link "Social Media 85" [ref=e157] [cursor=pointer]:
+              - /url: /social-media
+              - img [ref=e159]
+              - generic [ref=e164]: Social Media
+              - generic [ref=e165]: "85"
+            - link "Coding 174" [ref=e166] [cursor=pointer]:
+              - /url: /coding
+              - img [ref=e168]
+              - generic [ref=e172]: Coding
+              - generic [ref=e173]: "174"
+            - link "Writing 27" [ref=e174] [cursor=pointer]:
+              - /url: /writing
+              - img [ref=e176]
+              - generic [ref=e180]: Writing
+              - generic [ref=e181]: "27"
+            - link "Audio 19" [ref=e182] [cursor=pointer]:
+              - /url: /audio
+              - img [ref=e184]
+              - generic [ref=e188]: Audio
+              - generic [ref=e189]: "19"
+            - link "Photography 42" [ref=e190] [cursor=pointer]:
+              - /url: /photography
+              - img [ref=e192]
+              - generic [ref=e197]: Photography
+              - generic [ref=e198]: "42"
+            - link "Finance 16" [ref=e199] [cursor=pointer]:
+              - /url: /finance
+              - img [ref=e201]
+              - generic [ref=e205]: Finance
+              - generic [ref=e206]: "16"
+            - link "Education 24" [ref=e207] [cursor=pointer]:
+              - /url: /education
+              - img [ref=e209]
+              - generic [ref=e213]: Education
+              - generic [ref=e214]: "24"
+            - link "Security 25" [ref=e215] [cursor=pointer]:
+              - /url: /security
+              - img [ref=e217]
+              - generic [ref=e222]: Security
+              - generic [ref=e223]: "25"
+            - link "Productivity 104" [ref=e224] [cursor=pointer]:
+              - /url: /productivity
+              - img [ref=e226]
+              - generic [ref=e230]: Productivity
+              - generic [ref=e231]: "104"
+            - link "Newsletters 12" [ref=e232] [cursor=pointer]:
+              - /url: /newsletters
+              - img [ref=e234]
+              - generic [ref=e239]: Newsletters
+              - generic [ref=e240]: "12"
+            - link "Agents 49" [ref=e241] [cursor=pointer]:
+              - /url: /agents
+              - img [ref=e243]
+              - generic [ref=e247]: Agents
+              - generic [ref=e248]: "49"
+        - generic [ref=e249]:
+          - button "Submit a tool suggestion" [ref=e250] [cursor=pointer]:
+            - img [ref=e252]
+            - generic [ref=e256]: Submit a tool suggestion
+          - button "Collapse sidebar" [ref=e257] [cursor=pointer]:
+            - img [ref=e258]
+          - generic [ref=e261]:
+            - generic [ref=e264]:
+              - img [ref=e265]
+              - textbox "https://example.com" [ref=e268]
+              - button [disabled]:
+                - img
+            - link "Are you the maker?" [ref=e269] [cursor=pointer]:
+              - /url: /boosted-listing
+              - img [ref=e270]
+              - generic [ref=e272]: Are you the maker?
+    - main [ref=e273]:
+      - generic [ref=e276]:
+        - generic [ref=e278]:
+          - navigation [ref=e280]:
+            - generic [ref=e281]:
+              - link "Home" [ref=e283] [cursor=pointer]:
+                - /url: /
+              - generic [ref=e284]:
+                - generic [ref=e285]: /
+                - link "Articles" [ref=e286] [cursor=pointer]:
+                  - /url: /articles
+              - generic [ref=e287]:
+                - generic [ref=e288]: /
+                - generic [ref=e289]: "CleanshotX vs. Shottr vs. Xnapper: The Best Screenshot Tools for  Mac Compared"
+          - generic [ref=e291]:
+            - link "Bookmarks" [ref=e292] [cursor=pointer]:
+              - /url: /my-bookmarks
+              - img [ref=e293]
+            - button "Log in" [ref=e295] [cursor=pointer]
+            - button "Sign up" [ref=e296] [cursor=pointer]
+        - generic [ref=e297]:
+          - generic [ref=e299]:
+            - generic [ref=e300]:
+              - generic [ref=e301]:
+                - link "Shottr" [ref=e302] [cursor=pointer]:
+                  - /url: /tools/shottr
+                  - img "Shottr" [ref=e303]
+                - link "Xnapper" [ref=e304] [cursor=pointer]:
+                  - /url: /tools/xnapper
+                  - img "Xnapper" [ref=e305]
+                - link "Setapp" [ref=e306] [cursor=pointer]:
+                  - /url: /tools/setapp
+                  - img "Setapp" [ref=e307]
+                - link "CleanShot X" [ref=e308] [cursor=pointer]:
+                  - /url: /tools/cleanshot-x
+                  - img "CleanShot X" [ref=e309]
+              - generic [ref=e310]:
+                - generic [ref=e311]: Tool Comparisons
+                - time [ref=e312]: September 20, 2024
+                - generic [ref=e313]: ·
+                - generic [ref=e314]: 4 min read
+              - 'heading "CleanshotX vs. Shottr vs. Xnapper: The Best Screenshot Tools for  Mac Compared" [level=1] [ref=e315]'
+              - paragraph [ref=e316]: Compare CleanshotX, Shottr, and Xnapper to find the best screenshot tool for your Mac needs.
+              - list [ref=e318]:
+                - listitem [ref=e319]:
+                  - img [ref=e321]
+                  - paragraph [ref=e324]:
+                    - link "CleanshotX" [ref=e325] [cursor=pointer]:
+                      - /url: https://cleanshot.sjv.io/9goaeE
+                      - strong [ref=e326]: CleanshotX
+                    - text: has a lot of comprehensive features for power users
+                - listitem [ref=e327]:
+                  - img [ref=e329]
+                  - paragraph [ref=e332]:
+                    - link "Shottr" [ref=e333] [cursor=pointer]:
+                      - /url: https://shottr.cc/
+                      - strong [ref=e334]: Shottr
+                    - text: is a feature-rich tool with a free version, ideal for users on a budget.
+                - listitem [ref=e335]:
+                  - img [ref=e337]
+                  - paragraph [ref=e340]:
+                    - link "Xnapper" [ref=e341] [cursor=pointer]:
+                      - /url: https://xnapper.com/?via=toolfolio
+                      - strong [ref=e342]: Xnapper
+                    - text: is focused on social media content creation with easy sharing.
+            - 'img "CleanshotX vs. Shottr vs. Xnapper: The Best Screenshot Tools for  Mac Compared" [ref=e344]'
+            - article [ref=e345]:
+              - generic [ref=e346]:
+                - paragraph [ref=e347]:
+                  - text: If you work online, you probably share hundreds of Screenshots every week! Screenshots the best way to communicate with visual aids. I also use Screenshots to post what Im working on on socials (
+                  - link "@duduagency" [ref=e348] [cursor=pointer]:
+                    - /url: https://x.com/Duduagency
+                  - text: ). This is what initially inclined me to try out all these Screenshotting tools.
+                - paragraph [ref=e349]:
+                  - text: "Today, we’ll break down three popular choices for Mac users:"
+                  - link "CleanshotX" [ref=e350] [cursor=pointer]:
+                    - /url: https://cleanshot.sjv.io/9goaeE
+                    - strong [ref=e351]: CleanshotX
+                  - text: ","
+                  - link "Shottr" [ref=e352] [cursor=pointer]:
+                    - /url: https://shottr.cc/
+                    - strong [ref=e353]: Shottr
+                  - text: ", and"
+                  - link "Xnapper" [ref=e354] [cursor=pointer]:
+                    - /url: https://xnapper.com/?via=toolfolio
+                    - strong [ref=e355]: Xnapper
+                  - text: .
+                - heading [level=2]
+                - paragraph [ref=e356]:
+                  - strong [ref=e357]: "CleanshotX:"
+                  - text: The Swiss Army Knife of Screenshot Tools
+                - figure [ref=e359]:
+                  - img "Article image" [ref=e361]
+                - paragraph [ref=e362]:
+                  - emphasis [ref=e363]: Watch a Walkthrough
+                  - link "Video on YouTube" [ref=e364] [cursor=pointer]:
+                    - /url: https://youtu.be/RVtCPU1ycrE
+                    - emphasis [ref=e365]: Video on YouTube
+                - paragraph [ref=e366]:
+                  - text: If you’re a power user who regularly captures, edits, and shares screenshots,
+                  - strong [ref=e367]: CleanshotX
+                  - text: is the tool for you. It combines a wide range of features, from scrolling screenshots, GIFs and Video creation, making it perfect for users who need versatility.
+                - paragraph [ref=e368]:
+                  - strong [ref=e369]: Features
+                  - text: ":"
+                - list [ref=e370]:
+                  - listitem [ref=e371]:
+                    - paragraph [ref=e372]:
+                      - strong [ref=e373]: Capture Options
+                      - text: ": CleanshotX supports scrolling screenshots, window captures, merging multiple screenshots, and repeated area captures, making it great for in-depth projects."
+                    - paragraph [ref=e374]: (I personally use the 'repeated area captures' feature for Toolfolio Screenshots)
+                  - listitem [ref=e375]:
+                    - paragraph [ref=e376]:
+                      - strong [ref=e377]: Editing Capabilities
+                      - text: ": With seven text styles, multiple arrow style options, spotlight effects, and various blur effects, CleanshotX is fantastic for annotation. You can also crop, add padding, and customize the backgrounds of your screenshots."
+                  - listitem [ref=e378]:
+                    - paragraph [ref=e379]:
+                      - strong [ref=e380]: Text Recognition (OCR)
+                      - text: ": Need to extract text from images? CleanshotX has you covered with its Optical Character Recognition ("
+                      - strong [ref=e381]: OCR)
+                      - text: functionality.
+                    - paragraph [ref=e382]: It's one of those tools you didn't know you needed till you tried it
+                - paragraph [ref=e383]:
+                  - strong [ref=e384]: Cloud Sharing
+                  - text: ": For easy collaboration, CleanshotX allows cloud storage and sharing with a single click. (on monthly plan)"
+                - paragraph [ref=e385]:
+                  - emphasis [ref=e386]:
+                    - strong [ref=e387]: What Could Be Better
+                    - text: ": While nearly perfect, CleanshotX lacks a built-in screen ruler and color picker, which are handy for design-focused users, something offered in the next screenshot tool mentioned, Shottr."
+                - paragraph [ref=e388]:
+                  - strong [ref=e389]: Pricing
+                  - text: ":"
+                - list [ref=e390]:
+                  - listitem [ref=e391]:
+                    - paragraph [ref=e392]: "One-time purchase: $29"
+                  - listitem [ref=e393]:
+                    - paragraph [ref=e394]: "Subscription: $8/month or $79/year for unlimited cloud storage and advanced features."
+                - heading [level=2]
+                - 'heading "Shottr: The Best Free Tool for Developers & Designers" [level=2] [ref=e395]':
+                  - strong [ref=e396]: "Shottr:"
+                  - text: The Best Free Tool for Developers & Designers
+                - figure [ref=e398]:
+                  - img "Article image" [ref=e400]
+                - paragraph [ref=e401]:
+                  - emphasis [ref=e402]: Watch a Walkthrough
+                  - link "Video on YouTube" [ref=e403] [cursor=pointer]:
+                    - /url: https://youtu.be/475T_a1yMKg
+                    - emphasis [ref=e404]: Video on YouTube
+                - paragraph [ref=e405]:
+                  - text: For those looking for a free, lightweight option,
+                  - link "Shottr" [ref=e406] [cursor=pointer]:
+                    - /url: https://shottr.cc/
+                    - strong [ref=e407]: Shottr
+                  - text: is an excellent choice. It’s packed with key features that make it ideal for developers and designers, including a screen ruler and color picker.
+                - paragraph [ref=e408]:
+                  - strong [ref=e409]: Features
+                  - text: ":"
+                - list [ref=e410]:
+                  - listitem [ref=e411]:
+                    - paragraph [ref=e412]:
+                      - strong [ref=e413]: Capture Flexibility
+                      - text: ": Shottr supports area, window, and scrolling captures, making it highly versatile for various tasks."
+                  - listitem [ref=e414]:
+                    - paragraph [ref=e415]:
+                      - strong [ref=e416]: Text and QR Code Recognition
+                      - text: ": Like CleanshotX, Shottr offers text recognition (OCR) but goes a step further by recognizing QR codes."
+                  - listitem [ref=e417]:
+                    - paragraph [ref=e418]:
+                      - strong [ref=e419]: Design Tools
+                      - text: ": Shottr includes a screen ruler and color picker, which come in handy for design work."
+                  - listitem [ref=e420]:
+                    - paragraph [ref=e421]:
+                      - strong [ref=e422]: Annotations
+                      - text: ": Shottr provides basic annotation tools, including blur effects, arrows, and shapes."
+                - paragraph [ref=e423]:
+                  - emphasis [ref=e424]:
+                    - strong [ref=e425]: What Could Be Better
+                    - text: ": While Shottr offers a great free version, merging screenshots requires an upgrade, andtheres no option to add a Background."
+                - paragraph [ref=e426]:
+                  - strong [ref=e427]: Pricing
+                  - text: ":"
+                - list [ref=e428]:
+                  - listitem [ref=e429]:
+                    - paragraph [ref=e430]: Free version with most features.
+                  - listitem [ref=e431]:
+                    - paragraph [ref=e432]: "Basic Tier: $8 one-time payment."
+                  - listitem [ref=e433]:
+                    - paragraph [ref=e434]: "FriendsClub: $25 for early access to features and community support."
+                - heading [level=2]
+                - 'heading "Xnapper: The Go-To Tool for Social Media Creators" [level=2] [ref=e435]':
+                  - strong [ref=e436]: "Xnapper:"
+                  - text: The Go-To Tool for Social Media Creators
+                - figure [ref=e438]:
+                  - img "Article image" [ref=e440]
+                - paragraph [ref=e441]:
+                  - emphasis [ref=e442]: Watch a Walkthrough
+                  - link "Video on YouTube" [ref=e443] [cursor=pointer]:
+                    - /url: https://youtu.be/eliTQ3PnAN4
+                    - emphasis [ref=e444]: Video on YouTube
+                - paragraph [ref=e445]:
+                  - text: If your focus is creating content for social media,
+                  - link "Xnapper" [ref=e446] [cursor=pointer]:
+                    - /url: https://xnapper.com/?via=toolfolio
+                    - strong [ref=e447]: Xnapper
+                  - text: is tailored to make that process fast and seamless. While it’s not as feature-packed as the others, it shines in simplicity and speed for social content, in my experience, by providing all the pre-set ratios for each platform.
+                - paragraph [ref=e448]:
+                  - strong [ref=e449]: Features
+                  - text: ":"
+                - list [ref=e450]:
+                  - listitem [ref=e451]:
+                    - paragraph [ref=e452]:
+                      - strong [ref=e453]: Capture Simplicity
+                      - text: ": Xnapper excels at simple area capture with an easy-to-use interface."
+                  - listitem [ref=e454]:
+                    - paragraph [ref=e455]:
+                      - strong [ref=e456]: "Auto-redact:"
+                      - text: automatically protects sensitive information such as emails from a screenshot.
+                  - listitem [ref=e457]:
+                    - paragraph [ref=e458]:
+                      - strong [ref=e459]: Social Media Focus
+                      - text: ": The tool provides tailored aspect ratios for major social media platforms, ensuring your screenshots fit perfectly every time."
+                  - listitem [ref=e460]:
+                    - paragraph [ref=e461]:
+                      - strong [ref=e462]: Annotations
+                      - text: ": Xnapper includes basic annotation tools, like text styles, shapes, arrows, and an auto-redact feature to protect sensitive information."
+                  - listitem [ref=e463]:
+                    - paragraph [ref=e464]:
+                      - strong [ref=e465]: Quick Sharing
+                      - text: ": Double-click to copy your screenshots to the clipboard and share them instantly (I really like this)."
+                - paragraph [ref=e466]:
+                  - emphasis [ref=e467]:
+                    - strong [ref=e468]: What Could Be Better
+                    - text: ": Xnapper could use more capture options and enhanced annotation tools for more flexibility."
+                - paragraph [ref=e469]:
+                  - strong [ref=e470]: Pricing
+                  - text: ":"
+                - list [ref=e471]:
+                  - listitem [ref=e472]:
+                    - paragraph [ref=e473]: "Basic: $29.99 for one device, no watermark, one-time payment."
+                  - listitem [ref=e474]:
+                    - paragraph [ref=e475]: "Personal: $54.99 for two devices, no watermark, one-time payment."
+                  - listitem [ref=e476]:
+                    - paragraph [ref=e477]: "Standard: $79.99 for three devices, no watermark, one-time payment."
+                - heading "Conclusion" [level=2] [ref=e478]
+                - paragraph [ref=e479]:
+                  - text: All Three tools are great options. It all comes down to what type of use are you trying to get out of it. As a heavy user of Screenshots for communication with clients, partners, and collaborators, I get more use out of
+                  - link "CleanshotX" [ref=e480] [cursor=pointer]:
+                    - /url: https://cleanshot.sjv.io/9goaeE
+                  - text: and it is what I recommend to Friends.
+                - heading "Bonus Tool:" [level=2] [ref=e481]
+                - paragraph [ref=e482]: 250+ Mac apps, One subscription
+                - figure [ref=e484]:
+                  - img "Article image" [ref=e486]
+                - paragraph [ref=e487]:
+                  - text: Yes, you read that right.
+                  - link "Setapp" [ref=e488] [cursor=pointer]:
+                    - /url: /tools/setapp
+                  - text: is a Appstore with over 250+ mac apps available for you for $9.99 per month.
+                - paragraph [ref=e489]: It includes CleanshotX and Xnapper, both of which are paid tools. There soooo MANY useful tools!
+                - heading "Here are some i personally use as a subscriber:" [level=3] [ref=e490]
+                - list [ref=e491]:
+                  - listitem [ref=e492]:
+                    - paragraph [ref=e493]: CleanshotX
+                  - listitem [ref=e494]:
+                    - paragraph [ref=e495]: Paste
+                  - listitem [ref=e496]:
+                    - paragraph [ref=e497]: Bartnender
+                  - listitem [ref=e498]:
+                    - paragraph [ref=e499]: Yoink
+                  - listitem [ref=e500]:
+                    - paragraph [ref=e501]: Textsniper
+                  - listitem [ref=e502]:
+                    - paragraph [ref=e503]: Numi
+                  - listitem [ref=e504]:
+                    - paragraph [ref=e505]: Pixelsnap
+                  - listitem [ref=e506]:
+                    - paragraph [ref=e507]: clearVPN
+                  - listitem [ref=e508]:
+                    - paragraph [ref=e509]: NotchNook
+                  - listitem [ref=e510]:
+                    - paragraph [ref=e511]:
+                      - text: Whisper Transcribe
+                      - text: + and a couple more
+                - paragraph [ref=e512]:
+                  - text: Theres a free 7-day trial available on their site
+                  - link "setapp.com" [ref=e513] [cursor=pointer]:
+                    - /url: https://setapp.sjv.io/21mvz0
+                - paragraph [ref=e514]:
+                  - text: However, as an affiliate I have access to a 30-day Free trial when you sign up
+                  - link "here" [ref=e515] [cursor=pointer]:
+                    - /url: /tools/setapp
+                - 'heading "Disclaimer: Written by a Human" [level=2] [ref=e516]'
+                - blockquote [ref=e517]:
+                  - paragraph [ref=e518]: This article was written by a human. As such, please always DYOR - Do your own research. No paid sponsorships are included in this article.
+          - complementary [ref=e519]:
+            - generic [ref=e520]:
+              - generic [ref=e522]: Written by Created by Dudu from Toolfolio
+              - navigation [ref=e523]:
+                - generic [ref=e524]:
+                  - img [ref=e525]
+                  - generic [ref=e529]: On this page
+                - list [ref=e532]:
+                  - listitem [ref=e533]:
+                    - 'link "CleanshotX: The Swiss Army Knife of Screenshot Tools" [ref=e534] [cursor=pointer]':
+                      - /url: "#cleanshotx-the-swiss-army-knife-of-screenshot-tools"
+                  - listitem [ref=e535]:
+                    - 'link "## Shottr: The Best Free Tool for Developers & Designers" [ref=e536] [cursor=pointer]':
+                      - /url: "#shottr-the-best-free-tool-for-developers-designers"
+                  - listitem [ref=e537]:
+                    - 'link "## Xnapper: The Go-To Tool for Social Media Creators" [ref=e538] [cursor=pointer]':
+                      - /url: "#xnapper-the-go-to-tool-for-social-media-creators"
+                  - listitem [ref=e539]:
+                    - link "Conclusion" [ref=e540] [cursor=pointer]:
+                      - /url: "#conclusion"
+                  - listitem [ref=e541]:
+                    - link "Bonus Tool:" [ref=e542] [cursor=pointer]:
+                      - /url: "#bonus-tool"
+                  - listitem [ref=e543]:
+                    - 'link "Disclaimer: Written by a Human" [ref=e544] [cursor=pointer]':
+                      - /url: "#disclaimer-written-by-a-human"
+              - generic [ref=e545]:
+                - generic [ref=e546]:
+                  - paragraph [ref=e547]: Tools in this article
+                  - button "Refresh recommendations" [ref=e548] [cursor=pointer]:
+                    - img [ref=e549]
+                - generic [ref=e552]:
+                  - link "Shottr Shottr" [ref=e553] [cursor=pointer]:
+                    - /url: /tools/shottr
+                    - img "Shottr" [ref=e555]
+                    - generic [ref=e557]: Shottr
+                  - link "Xnapper Xnapper" [ref=e558] [cursor=pointer]:
+                    - /url: /tools/xnapper
+                    - img "Xnapper" [ref=e560]
+                    - generic [ref=e562]: Xnapper
+                  - link "Setapp Setapp" [ref=e563] [cursor=pointer]:
+                    - /url: /tools/setapp
+                    - img "Setapp" [ref=e565]
+                    - generic [ref=e567]: Setapp
+                  - link "CleanShot X CleanShot X" [ref=e568] [cursor=pointer]:
+                    - /url: /tools/cleanshot-x
+                    - img "CleanShot X" [ref=e570]
+                    - generic [ref=e572]: CleanShot X
+              - generic [ref=e573]:
+                - paragraph [ref=e574]: Recommended articles
+                - generic [ref=e575]:
+                  - link "Bear Bear Notes Review (2026)" [ref=e576] [cursor=pointer]:
+                    - /url: /articles/bear-notes-review
+                    - generic [ref=e577]:
+                      - generic "Bear" [ref=e580]:
+                        - img "Bear" [ref=e581]
+                      - heading "Bear Notes Review (2026)" [level=4] [ref=e582]
+                  - 'link "Mobbin Appshots Mobbin vs. Refero: Which is Better?" [ref=e583] [cursor=pointer]':
+                    - /url: /articles/mobbin-vs-refero
+                    - generic [ref=e584]:
+                      - generic [ref=e586]:
+                        - generic "Mobbin" [ref=e587]:
+                          - img "Mobbin" [ref=e588]
+                        - generic "Appshots" [ref=e589]:
+                          - img "Appshots" [ref=e590]
+                      - 'heading "Mobbin vs. Refero: Which is Better?" [level=4] [ref=e591]'
+                  - 'link "Tabsurfer Toby Toby vs Tabsurfer: Which is Better?" [ref=e592] [cursor=pointer]':
+                    - /url: /articles/toby-vs-tabsurfer
+                    - generic [ref=e593]:
+                      - generic [ref=e595]:
+                        - generic "Tabsurfer" [ref=e596]:
+                          - img "Tabsurfer" [ref=e597]
+                        - generic "Toby" [ref=e598]:
+                          - img "Toby" [ref=e599]
+                      - 'heading "Toby vs Tabsurfer: Which is Better?" [level=4] [ref=e600]'
+      - generic [ref=e601]:
+        - navigation "Footer" [ref=e602]:
+          - generic [ref=e604]:
+            - generic [ref=e605]:
+              - link [ref=e606] [cursor=pointer]:
+                - /url: /
+                - img [ref=e607]
+              - paragraph [ref=e623]: Toolfolio is a tool discovery platform. All the tools & resources you need, in one place.
+              - generic [ref=e624]:
+                - link "X" [ref=e625] [cursor=pointer]:
+                  - /url: https://x.com/toolfolio
+                  - img [ref=e626]
+                - link "TikTok" [ref=e628] [cursor=pointer]:
+                  - /url: https://www.tiktok.com/@toolfolio
+                  - img [ref=e629]
+                - link "Threads" [ref=e631] [cursor=pointer]:
+                  - /url: https://www.threads.com/@toolfoliooo
+                  - img [ref=e632]
+                - link "YouTube" [ref=e634] [cursor=pointer]:
+                  - /url: https://www.youtube.com/@toolfolio
+                  - img [ref=e635]
+                - link "Instagram" [ref=e637] [cursor=pointer]:
+                  - /url: https://www.instagram.com/toolfoliooo/
+                  - img [ref=e638]
+                - link "LinkedIn" [ref=e640] [cursor=pointer]:
+                  - /url: https://www.linkedin.com/company/toolfolio/posts/?feedView=all
+                  - img [ref=e641]
+            - generic [ref=e643]:
+              - heading "Categories" [level=3] [ref=e644]
+              - list [ref=e645]:
+                - listitem [ref=e646]:
+                  - link "Plugins & Extensions" [ref=e647] [cursor=pointer]:
+                    - /url: /plugins-and-extensions
+                - listitem [ref=e648]:
+                  - link "Design" [ref=e649] [cursor=pointer]:
+                    - /url: /design
+                - listitem [ref=e650]:
+                  - link "Artificial Intelligence" [ref=e651] [cursor=pointer]:
+                    - /url: /ai
+                - listitem [ref=e652]:
+                  - link "No-Code" [ref=e653] [cursor=pointer]:
+                    - /url: /no-code
+                - listitem [ref=e654]:
+                  - link "Business Operations" [ref=e655] [cursor=pointer]:
+                    - /url: /business-operations
+                - listitem [ref=e656]:
+                  - link "Marketing" [ref=e657] [cursor=pointer]:
+                    - /url: /marketing
+                - listitem [ref=e658]:
+                  - link "Video" [ref=e659] [cursor=pointer]:
+                    - /url: /video
+                - listitem [ref=e660]:
+                  - link "E-Commerce" [ref=e661] [cursor=pointer]:
+                    - /url: /e-commerce
+                - listitem [ref=e662]:
+                  - link "Social Media" [ref=e663] [cursor=pointer]:
+                    - /url: /social-media
+            - list [ref=e665]:
+              - listitem [ref=e666]:
+                - link "Coding" [ref=e667] [cursor=pointer]:
+                  - /url: /coding
+              - listitem [ref=e668]:
+                - link "Writing" [ref=e669] [cursor=pointer]:
+                  - /url: /writing
+              - listitem [ref=e670]:
+                - link "Audio" [ref=e671] [cursor=pointer]:
+                  - /url: /audio
+              - listitem [ref=e672]:
+                - link "Photography" [ref=e673] [cursor=pointer]:
+                  - /url: /photography
+              - listitem [ref=e674]:
+                - link "Finance" [ref=e675] [cursor=pointer]:
+                  - /url: /finance
+              - listitem [ref=e676]:
+                - link "Education" [ref=e677] [cursor=pointer]:
+                  - /url: /education
+              - listitem [ref=e678]:
+                - link "Security" [ref=e679] [cursor=pointer]:
+                  - /url: /security
+              - listitem [ref=e680]:
+                - link "Productivity" [ref=e681] [cursor=pointer]:
+                  - /url: /productivity
+              - listitem [ref=e682]:
+                - link "Newsletters" [ref=e683] [cursor=pointer]:
+                  - /url: /newsletters
+              - listitem [ref=e684]:
+                - link "Agents" [ref=e685] [cursor=pointer]:
+                  - /url: /agents
+            - generic [ref=e686]:
+              - heading "Libraries" [level=3] [ref=e687]
+              - list [ref=e688]:
+                - listitem [ref=e689]:
+                  - link "YC Companies" [ref=e690] [cursor=pointer]:
+                    - /url: /integrations/yc-companies
+                - listitem [ref=e691]:
+                  - link "Framer" [ref=e692] [cursor=pointer]:
+                    - /url: /integrations/framer
+                - listitem [ref=e693]:
+                  - link "Figma" [ref=e694] [cursor=pointer]:
+                    - /url: /integrations/figma
+                - listitem [ref=e695]:
+                  - link "Apple" [ref=e696] [cursor=pointer]:
+                    - /url: /integrations/apple
+                - listitem [ref=e697]:
+                  - link "Shopify" [ref=e698] [cursor=pointer]:
+                    - /url: /integrations/shopify
+                - listitem [ref=e699]:
+                  - link "Notion" [ref=e700] [cursor=pointer]:
+                    - /url: /integrations/notion
+                - listitem [ref=e701]:
+                  - link "Webflow" [ref=e702] [cursor=pointer]:
+                    - /url: /integrations/webflow
+                - listitem [ref=e703]:
+                  - link "Chrome" [ref=e704] [cursor=pointer]:
+                    - /url: /integrations/chrome
+            - generic [ref=e705]:
+              - heading "Connect" [level=3] [ref=e706]
+              - list [ref=e707]:
+                - listitem [ref=e708]:
+                  - link "Feedback" [ref=e709] [cursor=pointer]:
+                    - /url: /feedback
+                - listitem [ref=e710]:
+                  - link "Bug Report" [ref=e711] [cursor=pointer]:
+                    - /url: /bug-report
+                - listitem [ref=e712]:
+                  - link "Get in touch" [ref=e713] [cursor=pointer]:
+                    - /url: /contact
+        - generic [ref=e715]:
+          - paragraph [ref=e716]: © 2026 Toolfolio
+          - generic [ref=e717]:
+            - generic [ref=e718]:
+              - link "Listing Guidelines" [ref=e719] [cursor=pointer]:
+                - /url: /listing-guidelines
+              - generic [ref=e720]: ·
+            - generic [ref=e721]:
+              - link "Privacy Policy" [ref=e722] [cursor=pointer]:
+                - /url: /privacy
+              - generic [ref=e723]: ·
+            - generic [ref=e724]:
+              - link "Terms & Conditions" [ref=e725] [cursor=pointer]:
+                - /url: /terms
+              - generic [ref=e726]: ·
+            - button "Cookie settings" [ref=e727] [cursor=pointer]
+  - region "Notifications alt+T"
+  - dialog "We value your privacy" [ref=e728]:
+    - heading "We value your privacy" [level=2] [ref=e729]
+    - paragraph [ref=e730]:
+      - text: We use analytics cookies to help us improve Toolfolio. Essential site cookies are always on. Learn more in our
+      - link "Privacy Policy" [ref=e731] [cursor=pointer]:
+        - /url: /privacy
+      - text: .
+    - generic [ref=e732]:
+      - button "Decline" [ref=e733] [cursor=pointer]
+      - button "Accept" [ref=e734] [cursor=pointer]
+  - alert [ref=e735]
