@@ -11,7 +11,9 @@ import UniformTypeIdentifiers
 final class QuickAccessOverlay {
     static let shared = QuickAccessOverlay()
 
-    private static let maxCards = 5
+    // One card at a time — a fresh capture replaces the last, like the native
+    // macOS thumbnail (which never stacks).
+    private static let maxCards = 1
     /// Gap from the screen's side edge — roomier than the bottom gap so the
     /// stack doesn't read as glued to the bezel.
     private static let edgeMargin: CGFloat = 32
@@ -66,7 +68,7 @@ final class QuickAccessOverlay {
     }
 
     private func addCard(item: DeliveredCapture, thumbnail: NSImage?, video: QAOVideoMeta?) {
-        guard let screen = qaoScreenUnderMouse() else { return }
+        guard let screen = qaoPrimaryScreen() else { return }
         while cards.count >= Self.maxCards {
             dismiss(cards[cards.count - 1])
         }
@@ -357,9 +359,12 @@ private enum QAOBlur {
 }
 
 @MainActor
-private func qaoScreenUnderMouse() -> NSScreen? {
-    let mouse = NSEvent.mouseLocation
-    return NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) }
+private func qaoPrimaryScreen() -> NSScreen? {
+    // The primary display — the one carrying the menu bar, i.e. frame origin
+    // (0,0). NOT NSScreen.main, which follows the focused window onto whatever
+    // external monitor the active app happens to be on. The overlay lives in
+    // one fixed place, like the native macOS screenshot thumbnail.
+    return NSScreen.screens.first { $0.frame.origin == .zero }
         ?? NSScreen.main
         ?? NSScreen.screens.first
 }
@@ -464,7 +469,7 @@ private final class QAOCardPanel: NSPanel {
 // MARK: - Card view
 
 @MainActor
-private final class QAOCardView: NSView, NSDraggingSource, NSTextFieldDelegate {
+private final class QAOCardView: NSView, NSDraggingSource {
     var onDismiss: (() -> Void)?
     var currentItem: DeliveredCapture { item }
 
@@ -480,16 +485,32 @@ private final class QAOCardView: NSView, NSDraggingSource, NSTextFieldDelegate {
 
     private let scrim = QAOScrimView()
     private var saveButton: QAOIconButton?
-    private let blurImageView = QAOStaticImageView(frame: .zero)
-    private let captionBand = QAOCaptionBand(frame: .zero)
-    private let captionName = QAORenameField(labelWithString: "")
+    private let blurImageView = QAOFillImageView(frame: .zero)
     private var videoMetaText: String?
     /// When the card appeared — drives the "Just now / 2m ago" recency cue
     /// in the tooltip.
     private let createdAt = Date()
-    private static let captionHeight: CGFloat = 24
-    /// True while a rename holds app activation (released on commit/cancel).
-    private var renameActivation = false
+    // The card shows the WHOLE capture, always — no crop, no maximum. The image
+    // is scaled to a small size (min image width/height), and the card takes the
+    // image's width. Its height is the image's height OR the fixed icon-column
+    // height, whichever is greater — so a wide/short grab gets vertical padding
+    // (frosted letterbox) to make room for the three fixed-size icons per edge.
+    static let minImageWidth: CGFloat = 168
+    static let minImageHeight: CGFloat = 72
+    /// Room for three fixed 24pt discs (3×24 + 2×6 gaps + 2×8 margin).
+    static let iconColumnHeight: CGFloat = 100
+
+    /// The card/panel size for a capture — image width, height padded up to the
+    /// icon-column height when the image is too short (whole image, no crop).
+    static func cardSize(for thumbnail: NSImage?) -> NSSize {
+        guard let thumbnail, thumbnail.size.width > 0, thumbnail.size.height > 0 else {
+            return NSSize(width: 150, height: iconColumnHeight)   // no thumbnail yet (recording)
+        }
+        let w = thumbnail.size.width, h = thumbnail.size.height
+        let scale = max(minImageWidth / w, minImageHeight / h)
+        let imgW = round(w * scale), imgH = round(h * scale)
+        return NSSize(width: imgW, height: max(imgH, iconColumnHeight))
+    }
     private var mouseDownEvent: NSEvent?
     private var didDrag = false
     /// Drag payload, encoded off-main right after the card appears — a
@@ -502,15 +523,8 @@ private final class QAOCardView: NSView, NSDraggingSource, NSTextFieldDelegate {
         self.thumbnail = thumbnail
         if case .still = item.payload { isStill = true } else { isStill = false }
 
-        let width: CGFloat = 220
-        var height: CGFloat = 126
-        if let thumbnail, thumbnail.size.width > 0 {
-            height = width * thumbnail.size.height / thumbnail.size.width
-        }
-        // Floor guarantees room for the three-row icon columns — panoramas
-        // letterbox on the blur instead of starving the controls.
-        height = min(max(height, 126), 165)
-        super.init(frame: NSRect(x: 0, y: 0, width: width, height: height + Self.captionHeight))
+        // Size follows the capture's shape (native-thumbnail behaviour).
+        super.init(frame: NSRect(origin: .zero, size: Self.cardSize(for: thumbnail)))
         build(video: video)
 
         if case .still(let still) = item.payload {
@@ -539,28 +553,30 @@ private final class QAOCardView: NSView, NSDraggingSource, NSTextFieldDelegate {
         effect.wantsLayer = true
         effect.layer?.cornerRadius = HUDStyle.cornerRadius
         effect.layer?.masksToBounds = true
-        effect.layer?.borderWidth = 1
-        effect.layer?.borderColor = HUDStyle.borderColour.cgColor
         addSubview(effect)
 
-        // Full-bleed image above a slim name band — metadata rides the
-        // tooltip, not the card.
-        let thumbArea = NSRect(
-            x: 0, y: Self.captionHeight,
-            width: bounds.width, height: bounds.height - Self.captionHeight)
-        let imageView = QAOStaticImageView(frame: thumbArea)
-        imageView.autoresizingMask = [.width, .height]
-        imageView.imageScaling = .scaleProportionallyUpOrDown
+        // Full-bleed image — no caption, no name row; metadata rides the tooltip.
+        let thumbArea = bounds
         if let thumbnail {
+            let imageView = QAOFillImageView(frame: thumbArea)
+            imageView.autoresizingMask = [.width, .height]
             imageView.image = thumbnail
+            displayImage = thumbnail
+            effect.addSubview(imageView)
         } else {
+            // No thumbnail (a recording still encoding) — a centred glyph, not a
+            // stretched crop.
+            let imageView = QAOStaticImageView(frame: thumbArea)
+            imageView.autoresizingMask = [.width, .height]
+            imageView.imageScaling = .scaleProportionallyDown
             let config = NSImage.SymbolConfiguration(pointSize: 28, weight: .regular)
             imageView.image = NSImage(systemSymbolName: "film", accessibilityDescription: "Recording")?
                 .withSymbolConfiguration(config)
             imageView.contentTintColor = .tertiaryLabelColor
+            displayImage = imageView.image
+            effect.addSubview(imageView)
         }
-        displayImage = imageView.image
-        effect.addSubview(imageView)
+        refreshTooltip()
 
         if let video {
             var meta: [String] = []
@@ -568,13 +584,11 @@ private final class QAOCardView: NSView, NSDraggingSource, NSTextFieldDelegate {
             meta.append(video.formatLabel)
             videoMetaText = meta.joined(separator: " · ")
         }
-        buildCaption(in: effect)
 
         // Hover frosts the image (pre-blurred copy fades in — a visual-effect
         // view can only blur what's BEHIND the window, not this image).
         blurImageView.frame = thumbArea
         blurImageView.autoresizingMask = [.width, .height]
-        blurImageView.imageScaling = .scaleProportionallyUpOrDown
         blurImageView.alphaValue = 0
         effect.addSubview(blurImageView)
         if let thumbnail {
@@ -594,95 +608,52 @@ private final class QAOCardView: NSView, NSDraggingSource, NSTextFieldDelegate {
         scrim.alphaValue = 0
         effect.addSubview(scrim)
 
-        // Six identical light discs, two symmetric columns on shared rows:
-        // Copy/Folder/Annotate left, Close/Pin/More right.
-        var left: [QAOIconButton] = [
-            QAOIconButton(
-                symbol: "doc.on.doc", tooltip: "Copy", target: self,
-                action: #selector(copyAction), size: 32, symbolSize: 14),
+        buildIconColumns()
+    }
+
+    /// Two symmetric columns of light discs down the card's edges — three rows
+    /// each: Copy/Save/Annotate left, Close/Pin/More right. Fixed disc size; the
+    /// card is padded tall enough (iconColumnHeight) to always hold three rows.
+    private func buildIconColumns() {
+        // (symbol, tooltip, selector, symbol/disc ratio)
+        var left: [(String, String, Selector, CGFloat)] = [
+            ("doc.on.doc", "Copy", #selector(copyAction), 0.44),
+            (item.fileURL == nil ? "arrow.down.circle" : "folder",
+             item.fileURL == nil ? "Save" : "Reveal in Finder", #selector(saveOrRevealAction), 0.44),
         ]
-        let save = QAOIconButton(
-            symbol: item.fileURL == nil ? "arrow.down.circle" : "folder",
-            tooltip: item.fileURL == nil ? "Save" : "Reveal in Finder",
-            target: self, action: #selector(saveOrRevealAction), size: 32, symbolSize: 14)
-        saveButton = save
-        left.append(save)
-        if isStill {
-            left.append(QAOIconButton(
-                symbol: "pencil", tooltip: "Annotate", target: self,
-                action: #selector(annotateAction), size: 32, symbolSize: 15))
-        }
-        if isEditableVideo {
-            left.append(QAOIconButton(
-                symbol: "scissors", tooltip: "Edit", target: self,
-                action: #selector(editVideoAction), size: 32, symbolSize: 14))
-        }
-        var right: [QAOIconButton] = [
-            QAOIconButton(
-                symbol: "xmark", tooltip: "Close", target: self,
-                action: #selector(closeAction), size: 32, symbolSize: 13),
+        if isStill { left.append(("pencil", "Annotate", #selector(annotateAction), 0.47)) }
+        if isEditableVideo { left.append(("scissors", "Edit", #selector(editVideoAction), 0.44)) }
+        var right: [(String, String, Selector, CGFloat)] = [
+            ("xmark", "Close", #selector(closeAction), 0.41),
         ]
-        if isStill {
-            right.append(QAOIconButton(
-                symbol: "pin", tooltip: "Pin", target: self,
-                action: #selector(pinAction), size: 32, symbolSize: 14))
-        }
+        if isStill { right.append(("pin", "Pin", #selector(pinAction), 0.44)) }
         // Every hidden action (OCR, Send to, Convert, Move to Bin) also lives
         // in the right-click menu; this keeps that menu discoverable.
-        right.append(QAOIconButton(
-            symbol: "ellipsis", tooltip: "More…", target: self,
-            action: #selector(moreActions(_:)), size: 32, symbolSize: 14))
+        right.append(("ellipsis", "More…", #selector(moreActions(_:)), 0.44))
 
-        let side: CGFloat = 32
-        let gap: CGFloat = 10
-        let total = 3 * side + 2 * gap
-        let baseY = Self.captionHeight + (thumbArea.height - total) / 2
-        func place(_ column: [QAOIconButton], x: CGFloat, mask: NSView.AutoresizingMask) {
-            for (row, button) in column.enumerated() {
-                let y = baseY + CGFloat(2 - row) * (side + gap)
+        // Disc size follows the card height so three rows always fit, then the
+        // columns are centred vertically.
+        let gap: CGFloat = 6, hmargin: CGFloat = 7
+        let side: CGFloat = 24   // fixed — the card is sized to fit it, not vice versa
+
+        func place(_ column: [(String, String, Selector, CGFloat)],
+                   x: CGFloat, mask: NSView.AutoresizingMask) {
+            let total = CGFloat(column.count) * side + CGFloat(column.count - 1) * gap
+            let baseY = (bounds.height - total) / 2
+            let top = column.count - 1
+            for (row, spec) in column.enumerated() {
+                let button = QAOIconButton(
+                    symbol: spec.0, tooltip: spec.1, target: self, action: spec.2,
+                    size: side, symbolSize: round(side * spec.3))
+                if spec.2 == #selector(saveOrRevealAction) { saveButton = button }
+                let y = baseY + CGFloat(top - row) * (side + gap)
                 button.frame = NSRect(x: x, y: y, width: side, height: side)
                 button.autoresizingMask = mask.union([.minYMargin, .maxYMargin])
                 scrim.addSubview(button)
             }
         }
-        place(left, x: 12, mask: [.maxXMargin])
-        place(right, x: bounds.width - 12 - side, mask: [.minXMargin])
-    }
-
-    /// Slim bottom band: just the capture's name, editable in place.
-    private func buildCaption(in effect: NSView) {
-        captionBand.frame = NSRect(x: 0, y: 0, width: bounds.width, height: Self.captionHeight)
-        captionBand.autoresizingMask = [.width, .maxYMargin]
-        effect.addSubview(captionBand)
-
-        captionName.isBordered = false
-        captionName.drawsBackground = false
-        captionName.focusRingType = .none
-        captionName.usesSingleLineMode = true
-        captionName.delegate = self
-        captionName.font = .systemFont(ofSize: 11.5, weight: .medium)
-        captionName.textColor = NSColor.white.withAlphaComponent(0.9)
-        captionName.lineBreakMode = .byTruncatingMiddle
-        // Editing arms only on a deliberate click — an always-editable field
-        // steals first responder (and shows a selection) whenever the panel
-        // happens to become key.
-        captionName.canRename = { [weak self] in
-            guard let self, let panel = self.window as? QAOCardPanel else { return false }
-            return !panel.isCollapsed && self.item.fileURL != nil
-        }
-        captionName.onArm = { [weak self] in
-            guard let self, !self.renameActivation else { return }
-            self.renameActivation = true
-            AppActivation.acquire()
-        }
-        captionName.translatesAutoresizingMaskIntoConstraints = false
-        captionBand.addSubview(captionName)
-        NSLayoutConstraint.activate([
-            captionName.leadingAnchor.constraint(equalTo: captionBand.leadingAnchor, constant: 10),
-            captionName.trailingAnchor.constraint(lessThanOrEqualTo: captionBand.trailingAnchor, constant: -10),
-            captionName.centerYAnchor.constraint(equalTo: captionBand.centerYAnchor),
-        ])
-        refreshCaption()
+        place(left, x: hmargin, mask: [.maxXMargin])
+        place(right, x: bounds.width - hmargin - side, mask: [.minXMargin])
     }
 
     /// A friendly recency cue — the card stack is newest-at-corner, but nothing
@@ -695,12 +666,13 @@ private final class QAOCardView: NSView, NSDraggingSource, NSTextFieldDelegate {
         return formatter.localizedString(for: createdAt, relativeTo: Date())
     }
 
-    private func refreshCaption() {
-        captionName.isEditable = false
-        let stem = item.fileURL?.deletingPathExtension().lastPathComponent
-        captionName.stringValue = stem ?? "Not saved"
-        // Metadata lives in the tooltip — the card itself stays clean.
+    /// The card carries no visible name — its metadata (name, dimensions, size,
+    /// recency) lives entirely in the hover tooltip.
+    private func refreshTooltip() {
         var meta: [String] = []
+        if let stem = item.fileURL?.deletingPathExtension().lastPathComponent {
+            meta.append(stem)
+        }
         switch item.payload {
         case .still(let still):
             meta.append("\(still.image.width)×\(still.image.height)")
@@ -715,70 +687,7 @@ private final class QAOCardView: NSView, NSDraggingSource, NSTextFieldDelegate {
             if let videoMetaText { meta.append(videoMetaText) }
         }
         meta.append(relativeTimeString())
-        let metaLine = meta.joined(separator: " · ")
-        captionName.toolTip = stem == nil ? metaLine : "\(metaLine) — click to rename"
-        toolTip = metaLine
-    }
-
-    // MARK: Inline rename
-
-    func controlTextDidBeginEditing(_ obj: Notification) {
-        (captionName.currentEditor() as? NSTextView)?.insertionPointColor = .white
-    }
-
-    func controlTextDidEndEditing(_ obj: Notification) {
-        commitRename()
-    }
-
-    func control(
-        _ control: NSControl, textView: NSTextView, doCommandBy selector: Selector
-    ) -> Bool {
-        if selector == #selector(NSResponder.cancelOperation(_:)) {
-            refreshCaption()
-            window?.makeFirstResponder(nil)
-            return true
-        }
-        // The name field wraps, so Return would insert a newline — commit.
-        if selector == #selector(NSResponder.insertNewline(_:)) {
-            window?.makeFirstResponder(nil)
-            return true
-        }
-        return false
-    }
-
-    /// Renames the file on disk (and the record's manifest when there is
-    /// one), keeping Recents pointed at the new URL.
-    private func commitRename() {
-        if renameActivation {
-            renameActivation = false
-            AppActivation.release()
-        }
-        defer { window?.makeFirstResponder(nil) }
-        guard let url = item.fileURL else { refreshCaption(); return }
-        let stem = captionName.stringValue
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "/", with: "-")
-            .replacingOccurrences(of: ":", with: ".")
-        guard !stem.isEmpty, stem != url.deletingPathExtension().lastPathComponent else {
-            refreshCaption()
-            return
-        }
-        let newName = "\(stem).\(url.pathExtension)"
-        let newURL: URL?
-        if let id = item.recordID {
-            newURL = SentryStore.shared.renameMedia(recordID: id, to: newName)
-        } else {
-            let dest = url.deletingLastPathComponent().appendingPathComponent(newName)
-            newURL = (try? FileManager.default.moveItem(at: url, to: dest)) != nil ? dest : nil
-        }
-        guard let newURL else {
-            Toast.show("Could not rename", symbol: "exclamationmark.triangle")
-            refreshCaption()
-            return
-        }
-        OutputRouter.shared.replaceRecent(url, with: newURL)
-        item = DeliveredCapture(payload: item.payload, fileURL: newURL, recordID: item.recordID)
-        refreshCaption()
+        toolTip = meta.joined(separator: " · ")
     }
 
     // MARK: Hover
@@ -802,9 +711,8 @@ private final class QAOCardView: NSView, NSDraggingSource, NSTextFieldDelegate {
         if collapsed {
             toolTip = "Click to expand"
         } else if hovering {
-            refreshCaption()
+            refreshTooltip()
         }
-        captionBand.setHighlighted(hovering && collapsed)
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.15
             let on: CGFloat = (hovering && !collapsed) ? 1 : 0
@@ -1008,7 +916,7 @@ private final class QAOCardView: NSView, NSDraggingSource, NSTextFieldDelegate {
             item = DeliveredCapture(
                 payload: .still(still), fileURL: result.url, recordID: result.recordID)
             saveButton?.setSymbol("folder", tooltip: "Reveal in Finder")
-            refreshCaption()
+            refreshTooltip()
             Toast.show("Saved", symbol: "arrow.down.circle")
         }
     }
@@ -1174,63 +1082,21 @@ private final class QAOStaticImageView: NSImageView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
-/// Card-name label that turns into an editor only on a deliberate click —
-/// never grabs first responder just because its panel became key.
-private final class QAORenameField: NSTextField {
-    var canRename: () -> Bool = { false }
+/// Thumbnail image, layer-hosted. The card is sized to the image's own aspect,
+/// so the whole shot fills it exactly — aspect-fit guarantees nothing is ever
+/// cropped or cut off (any sub-pixel rounding letterboxes invisibly, never cuts).
+private final class QAOFillImageView: NSView {
+    var image: NSImage? { didSet { layer?.contents = image } }
 
-    /// Labels normally pass clicks through — reclaim them while renaming is
-    /// possible (point arrives in superview coordinates).
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        guard isEditable || canRename(), frame.contains(point) else { return nil }
-        return super.hitTest(point) ?? self
-    }
-
-    /// The card panel is non-activating; without this the panel never
-    /// becomes key on click and typed text lands in the frontmost app.
-    override var needsPanelToBecomeKey: Bool { true }
-
-    /// Runs as editing arms — the card borrows app activation here so the
-    /// keyboard reliably routes to the field, and returns it on commit.
-    var onArm: () -> Void = {}
-
-    override func mouseDown(with event: NSEvent) {
-        if !isEditable, canRename() {
-            isEditable = true
-            onArm()
-            // Activation (onArm) brings the app's regular windows forward and
-            // one may grab key — re-assert the panel after that settles or
-            // typing lands in an open editor window instead of this field.
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                self.window?.makeKey()
-                self.window?.makeFirstResponder(self)
-                self.currentEditor()?.selectAll(nil)
-            }
-            return
-        }
-        super.mouseDown(with: event)
-    }
-}
-
-/// Name strip along the card's bottom edge. No hitTest override: the rename
-/// field claims its own clicks, everything else bubbles up to the card (so
-/// drag-out and click-to-expand still work from the band).
-private final class QAOCaptionBand: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
-        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.4).cgColor
+        layer?.masksToBounds = true
+        layer?.contentsGravity = .resizeAspect
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
-
-    /// Brightens on hover as a click-to-expand cue for collapsed slivers.
-    func setHighlighted(_ on: Bool) {
-        layer?.backgroundColor = on
-            ? NSColor.white.withAlphaComponent(0.16).cgColor
-            : NSColor.black.withAlphaComponent(0.4).cgColor
-    }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 /// A cell of the corner pill: bare glyph at rest, the whole cell fills on
