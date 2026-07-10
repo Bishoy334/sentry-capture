@@ -106,11 +106,11 @@ private struct PrefsGeneralPane: View {
                     Text("Bottom right").tag("bottomRight")
                 }
                 Picker("Auto-close cards", selection: $settings.qaoAutoCloseSeconds) {
-                    Text("Never").tag(0)
+                    Text("After 5 seconds").tag(5)
+                    Text("After 8 seconds").tag(8)
                     Text("After 10 seconds").tag(10)
                     Text("After 30 seconds").tag(30)
                     Text("After 1 minute").tag(60)
-                    Text("After 5 minutes").tag(300)
                 }
                 Toggle("Play capture sound", isOn: $settings.playSound)
             }

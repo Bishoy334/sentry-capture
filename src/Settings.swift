@@ -96,7 +96,9 @@ final class Settings: ObservableObject {
         saveToDisk = d.object(forKey: "saveToDisk") as? Bool ?? true
         showQuickAccess = d.object(forKey: "showQuickAccess") as? Bool ?? true
         qaoCorner = d.string(forKey: "qaoCorner") ?? "bottomRight"
-        qaoAutoCloseSeconds = d.object(forKey: "qaoAutoCloseSeconds") as? Int ?? 0
+        // Cards no longer stay forever — a stored 0 ("Never") maps to the default.
+        let storedAutoClose = d.object(forKey: "qaoAutoCloseSeconds") as? Int ?? 8
+        qaoAutoCloseSeconds = storedAutoClose > 0 ? storedAutoClose : 8
         playSound = d.object(forKey: "playSound") as? Bool ?? true
         downscaleRetina = d.object(forKey: "downscaleRetina") as? Bool ?? false
         showCursorInRecording = d.object(forKey: "showCursorInRecording") as? Bool ?? true

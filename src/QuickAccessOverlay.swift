@@ -25,9 +25,6 @@ final class QuickAccessOverlay {
     private var cards: [QAOCardPanel] = []
     /// Dismissed cards, newest last — "Restore Last Capture Card" pops these.
     private var recentlyClosed: [DeliveredCapture] = []
-    /// Chevron toggle: slide the whole stack off-screen and back.
-    private var stackHidden = false
-    private var chevron: QAOChevronPanel?
 
     var canRestore: Bool { !recentlyClosed.isEmpty }
 
@@ -42,7 +39,7 @@ final class QuickAccessOverlay {
         ) { _ in
             MainActor.assumeIsolated {
                 let overlay = QuickAccessOverlay.shared
-                guard !overlay.cards.isEmpty, !overlay.stackHidden else { return }
+                guard !overlay.cards.isEmpty else { return }
                 overlay.layout(entering: nil)
             }
         }
@@ -80,46 +77,16 @@ final class QuickAccessOverlay {
         cards.insert(panel, at: 0)
         // A fresh capture always reveals the stack — that's what it's for.
         if overlayHidden { toggleOverlayHidden() }
-        if stackHidden { setStackHidden(false) }
         layout(entering: panel)
         armAutoClose(panel)
     }
 
-    /// ⌘1: hide/show the entire overlay — cards AND the corner pill — in one
-    /// press. Distinct from the pill's own chevron (which slides the cards
-    /// away but keeps the pill as the way back).
+    /// ⌘1: hide/show the entire overlay in one press.
     private var overlayHidden = false
     func toggleOverlayHidden() {
         overlayHidden.toggle()
-        if overlayHidden {
-            for panel in cards { panel.orderOut(nil) }
-            chevron?.orderOut(nil)
-        } else {
-            for panel in cards where !stackHidden { panel.orderFrontRegardless() }
-            updateChevron()
-        }
-    }
-
-    fileprivate func setStackHidden(_ hidden: Bool) {
-        guard stackHidden != hidden else { return }
-        stackHidden = hidden
-        chevron?.setCollapsed(hidden)
-        if hidden {
-            for panel in cards {
-                NSAnimationContext.runAnimationGroup({ context in
-                    context.duration = 0.2
-                    context.timingFunction = CAMediaTimingFunction(name: .easeIn)
-                    panel.animator().alphaValue = 0
-                    panel.animator().setFrame(panel.frame.offsetBy(dx: 0, dy: -36), display: true)
-                }, completionHandler: {
-                    MainActor.assumeIsolated {
-                        if self.stackHidden { panel.orderOut(nil) }
-                    }
-                })
-            }
-        } else {
-            for panel in cards { panel.orderFrontRegardless() }
-            layout(entering: nil)   // slides frames back and fades alpha in
+        for panel in cards {
+            if overlayHidden { panel.orderOut(nil) } else { panel.orderFrontRegardless() }
         }
     }
 
@@ -128,11 +95,13 @@ final class QuickAccessOverlay {
         recentlyClosed.append(panel.cardView.currentItem)
         if recentlyClosed.count > 5 { recentlyClosed.removeFirst() }
         cards.remove(at: index)
+        // Slide out toward the screen edge the card is anchored to.
+        let dx: CGFloat = Settings.shared.qaoCorner == "bottomRight" ? 24 : -24
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.18
             context.timingFunction = CAMediaTimingFunction(name: .easeIn)
             panel.animator().alphaValue = 0
-            panel.animator().setFrame(panel.frame.offsetBy(dx: -16, dy: 0), display: true)
+            panel.animator().setFrame(panel.frame.offsetBy(dx: dx, dy: 0), display: true)
         }, completionHandler: {
             MainActor.assumeIsolated { panel.orderOut(nil) }
         })
@@ -140,10 +109,10 @@ final class QuickAccessOverlay {
     }
 
     /// Cards linger while the pointer is on them — the timer re-arms rather
-    /// than yanking a card out from under a hover.
+    /// than yanking a card out from under a hover. Cards never stay forever:
+    /// a stored 0 ("Never", from older builds) clamps to the minimum.
     private func armAutoClose(_ panel: QAOCardPanel) {
-        let seconds = Settings.shared.qaoAutoCloseSeconds
-        guard seconds > 0 else { return }
+        let seconds = max(5, Settings.shared.qaoAutoCloseSeconds)
         Task { @MainActor [weak self, weak panel] in
             try? await Task.sleep(for: .seconds(seconds))
             guard let self, let panel, self.cards.contains(where: { $0 === panel }) else { return }
@@ -171,9 +140,7 @@ final class QuickAccessOverlay {
             guard let screen = panel.homeScreen else { continue }
             panel.isCollapsed = index >= 3 && !panel.userExpanded
             let visible = screen.visibleFrame
-            // The chevron pill owns the corner itself; cards stack above it.
-            let y = cursors[screen.displayID]
-                ?? (visible.minY + Self.bottomMargin + QAOChevronPanel.height + Self.gap)
+            let y = cursors[screen.displayID] ?? (visible.minY + Self.bottomMargin)
             let size = panel.isCollapsed
                 ? NSSize(width: panel.fullSize.width, height: QAOCardPanel.collapsedHeight)
                 : panel.fullSize
@@ -184,7 +151,8 @@ final class QuickAccessOverlay {
             cursors[screen.displayID] = y + size.height + Self.gap
         }
         if let entering, let target = targets.first(where: { $0.0 === entering })?.1 {
-            entering.setFrame(target.offsetBy(dx: -24, dy: 0), display: false)
+            // Slide in from the screen edge the card is anchored to.
+            entering.setFrame(target.offsetBy(dx: rightCorner ? 24 : -24, dy: 0), display: false)
             entering.alphaValue = 0
             entering.orderFrontRegardless()
         }
@@ -196,141 +164,6 @@ final class QuickAccessOverlay {
                 panel.animator().alphaValue = 1
             }
         }
-        updateChevron()
-    }
-
-    private func updateChevron() {
-        guard let screen = cards.first?.homeScreen else {
-            chevron?.orderOut(nil)
-            chevron = nil
-            stackHidden = false
-            return
-        }
-        if chevron == nil {
-            chevron = QAOChevronPanel { [weak self] in
-                guard let self else { return }
-                self.setStackHidden(!self.stackHidden)
-            }
-        }
-        let visible = screen.visibleFrame
-        // Centre the pill under the card column — derive from the same card x
-        // the stack uses so the two can never drift.
-        let cardWidth = cards.first?.fullSize.width ?? 220
-        let cardX = Settings.shared.qaoCorner == "bottomRight"
-            ? visible.maxX - Self.edgeMargin - cardWidth
-            : visible.minX + Self.edgeMargin
-        let x = cardX + (cardWidth - QAOChevronPanel.width) / 2
-        chevron?.setFrameOrigin(NSPoint(x: x, y: visible.minY + Self.bottomMargin))
-        chevron?.setCollapsed(stackHidden)
-        chevron?.orderFrontRegardless()
-    }
-}
-
-// MARK: - Corner control strip
-
-/// Compact pill under the stack. More than a hide/show chevron: it opens
-/// the capture library and starts a new capture, so the corner works
-/// without a trip to the menu-bar icon.
-@MainActor
-private final class QAOChevronPanel: NSPanel {
-    static let width: CGFloat = 138
-    static let height: CGFloat = 26
-
-    private let onToggle: () -> Void
-    private let toggleButton = QAOSegmentButton()
-
-    init(onToggle: @escaping () -> Void) {
-        self.onToggle = onToggle
-        super.init(
-            contentRect: NSRect(x: 0, y: 0, width: Self.width, height: Self.height),
-            styleMask: [.borderless, .nonactivatingPanel],
-            backing: .buffered, defer: false)
-        isOpaque = false
-        backgroundColor = .clear
-        hasShadow = true
-        level = .statusBar
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-        hidesOnDeactivate = false
-        isReleasedWhenClosed = false
-        animationBehavior = .none
-
-        let card = HUDStyle.card()
-        card.layer?.cornerRadius = Self.height / 2
-        // Behind-window blur alone goes wallpaper-coloured; a dark wash keeps
-        // the pill reading as chrome, matching the all-in-one strip.
-        let wash = NSView()
-        wash.wantsLayer = true
-        wash.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.5).cgColor
-        wash.frame = NSRect(x: 0, y: 0, width: Self.width, height: Self.height)
-        wash.autoresizingMask = [.width, .height]
-        card.addSubview(wash)
-
-        // True segmented pill: three equal cells, glyphs dead-centred in
-        // each, hover fills the whole cell to the pill's edge. No floating
-        // button backgrounds to clip against the capsule.
-        let cellWidth = Self.width / 3
-        let radius = Self.height / 2
-        func configure(_ button: QAOSegmentButton, index: Int, symbol: String, tooltip: String, action: Selector) {
-            button.isBordered = false
-            button.setButtonType(.momentaryChange)
-            button.imagePosition = .imageOnly
-            button.alignment = .center
-            button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: tooltip)?
-                .withSymbolConfiguration(.init(pointSize: 11, weight: .regular))
-            button.contentTintColor = NSColor.white.withAlphaComponent(0.85)
-            button.toolTip = tooltip
-            button.target = self
-            button.action = action
-            button.frame = NSRect(
-                x: CGFloat(index) * cellWidth, y: 0, width: cellWidth, height: Self.height)
-            button.wantsLayer = true
-            // End cells round with the capsule so the hover fill hugs it.
-            button.layer?.cornerRadius = index == 1 ? 0 : radius
-            button.layer?.maskedCorners = index == 0
-                ? [.layerMinXMinYCorner, .layerMinXMaxYCorner]
-                : (index == 2 ? [.layerMaxXMinYCorner, .layerMaxXMaxYCorner] : [])
-            card.addSubview(button)
-        }
-        configure(toggleButton, index: 0, symbol: "chevron.down",
-                  tooltip: "Hide captures", action: #selector(tapped))
-        configure(QAOSegmentButton(), index: 1, symbol: "square.grid.2x2",
-                  tooltip: "Open capture library", action: #selector(libraryTapped))
-        configure(QAOSegmentButton(), index: 2, symbol: "viewfinder",
-                  tooltip: "New capture", action: #selector(captureTapped))
-
-        for x in [cellWidth, cellWidth * 2] {
-            let line = NSView(frame: NSRect(x: x, y: 5, width: 1, height: Self.height - 10))
-            line.wantsLayer = true
-            line.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.12).cgColor
-            card.addSubview(line)
-        }
-        contentView = card
-        setCollapsed(false)
-    }
-
-    func setCollapsed(_ collapsed: Bool) {
-        // Just swap the chevron direction — no count badge (it shoved the
-        // glyph off-centre and looked broken).
-        toggleButton.image = NSImage(
-            systemSymbolName: collapsed ? "chevron.up" : "chevron.down",
-            accessibilityDescription: collapsed ? "Show captures" : "Hide captures")?
-            .withSymbolConfiguration(.init(pointSize: 11, weight: .regular))
-        toggleButton.contentTintColor = NSColor.white.withAlphaComponent(0.85)
-        toggleButton.imagePosition = .imageOnly
-        toggleButton.title = ""
-        toggleButton.toolTip = collapsed ? "Show captures" : "Hide captures"
-    }
-
-    @objc private func tapped() {
-        onToggle()
-    }
-
-    @objc private func libraryTapped() {
-        HistoryController.shared.show()
-    }
-
-    @objc private func captureTapped() {
-        (NSApp.delegate as? AppDelegate)?.dispatch(.captureArea)
     }
 }
 
@@ -484,33 +317,16 @@ private final class QAOCardView: NSView, NSDraggingSource {
     private var displayImage: NSImage?
 
     private let scrim = QAOScrimView()
-    private var saveButton: QAOIconButton?
     private let blurImageView = QAOFillImageView(frame: .zero)
     private var videoMetaText: String?
     /// When the card appeared — drives the "Just now / 2m ago" recency cue
     /// in the tooltip.
     private let createdAt = Date()
-    // The card shows the WHOLE capture, always — no crop, no maximum. The image
-    // is scaled to a small size (min image width/height), and the card takes the
-    // image's width. Its height is the image's height OR the fixed icon-column
-    // height, whichever is greater — so a wide/short grab gets vertical padding
-    // (frosted letterbox) to make room for the three fixed-size icons per edge.
-    static let minImageWidth: CGFloat = 168
-    static let minImageHeight: CGFloat = 72
-    /// Room for three fixed 24pt discs (3×24 + 2×6 gaps + 2×8 margin).
-    static let iconColumnHeight: CGFloat = 100
-
-    /// The card/panel size for a capture — image width, height padded up to the
-    /// icon-column height when the image is too short (whole image, no crop).
-    static func cardSize(for thumbnail: NSImage?) -> NSSize {
-        guard let thumbnail, thumbnail.size.width > 0, thumbnail.size.height > 0 else {
-            return NSSize(width: 150, height: iconColumnHeight)   // no thumbnail yet (recording)
-        }
-        let w = thumbnail.size.width, h = thumbnail.size.height
-        let scale = max(minImageWidth / w, minImageHeight / h)
-        let imgW = round(w * scale), imgH = round(h * scale)
-        return NSSize(width: imgW, height: max(imgH, iconColumnHeight))
-    }
+    /// Fixed card frame regardless of the capture's shape. The image aspect-fits
+    /// inside (never cropped, zoomed out to fit); leftover space letterboxes or
+    /// pillarboxes against the blur material. Sized so two columns of three 24pt
+    /// discs sit comfortably at the edges.
+    static let cardSize = NSSize(width: 248, height: 140)
     private var mouseDownEvent: NSEvent?
     private var didDrag = false
     /// Drag payload, encoded off-main right after the card appears — a
@@ -523,8 +339,7 @@ private final class QAOCardView: NSView, NSDraggingSource {
         self.thumbnail = thumbnail
         if case .still = item.payload { isStill = true } else { isStill = false }
 
-        // Size follows the capture's shape (native-thumbnail behaviour).
-        super.init(frame: NSRect(origin: .zero, size: Self.cardSize(for: thumbnail)))
+        super.init(frame: NSRect(origin: .zero, size: Self.cardSize))
         build(video: video)
 
         if case .still(let still) = item.payload {
@@ -611,42 +426,37 @@ private final class QAOCardView: NSView, NSDraggingSource {
         buildIconColumns()
     }
 
-    /// Two symmetric columns of light discs down the card's edges — three rows
-    /// each: Copy/Save/Annotate left, Close/Pin/More right. Fixed disc size; the
-    /// card is padded tall enough (iconColumnHeight) to always hold three rows.
+    /// Two symmetric columns of discs in the card's corners — Copy/Annotate
+    /// left, Close/More right. Space-between: top corner, bottom corner.
+    /// Save/Reveal and Pin live in the More… / right-click menu.
     private func buildIconColumns() {
         // (symbol, tooltip, selector, symbol/disc ratio)
         var left: [(String, String, Selector, CGFloat)] = [
             ("doc.on.doc", "Copy", #selector(copyAction), 0.44),
-            (item.fileURL == nil ? "arrow.down.circle" : "folder",
-             item.fileURL == nil ? "Save" : "Reveal in Finder", #selector(saveOrRevealAction), 0.44),
         ]
         if isStill { left.append(("pencil", "Annotate", #selector(annotateAction), 0.47)) }
         if isEditableVideo { left.append(("scissors", "Edit", #selector(editVideoAction), 0.44)) }
         var right: [(String, String, Selector, CGFloat)] = [
             ("xmark", "Close", #selector(closeAction), 0.41),
         ]
-        if isStill { right.append(("pin", "Pin", #selector(pinAction), 0.44)) }
-        // Every hidden action (OCR, Send to, Convert, Move to Bin) also lives
-        // in the right-click menu; this keeps that menu discoverable.
+        // Every hidden action (Pin, Save/Reveal, OCR, Send to, Convert, Move to
+        // Bin) also lives in the right-click menu; this keeps it discoverable.
         right.append(("ellipsis", "More…", #selector(moreActions(_:)), 0.44))
 
-        // Disc size follows the card height so three rows always fit, then the
-        // columns are centred vertically.
-        let gap: CGFloat = 6, hmargin: CGFloat = 7
-        let side: CGFloat = 24   // fixed — the card is sized to fit it, not vice versa
+        let hmargin: CGFloat = 8, vmargin: CGFloat = 8
+        let side: CGFloat = 24
 
         func place(_ column: [(String, String, Selector, CGFloat)],
                    x: CGFloat, mask: NSView.AutoresizingMask) {
-            let total = CGFloat(column.count) * side + CGFloat(column.count - 1) * gap
-            let baseY = (bounds.height - total) / 2
-            let top = column.count - 1
+            // Space-between: first disc hugs the top, last hugs the bottom,
+            // the rest spread evenly. A lone disc centres.
+            let topY = bounds.height - vmargin - side
+            let step = column.count > 1 ? (topY - vmargin) / CGFloat(column.count - 1) : 0
             for (row, spec) in column.enumerated() {
                 let button = QAOIconButton(
                     symbol: spec.0, tooltip: spec.1, target: self, action: spec.2,
                     size: side, symbolSize: round(side * spec.3))
-                if spec.2 == #selector(saveOrRevealAction) { saveButton = button }
-                let y = baseY + CGFloat(top - row) * (side + gap)
+                let y = column.count > 1 ? topY - CGFloat(row) * step : (bounds.height - side) / 2
                 button.frame = NSRect(x: x, y: y, width: side, height: side)
                 button.autoresizingMask = mask.union([.minYMargin, .maxYMargin])
                 scrim.addSubview(button)
@@ -915,7 +725,6 @@ private final class QAOCardView: NSView, NSDraggingSource {
             still.recordID = result.recordID
             item = DeliveredCapture(
                 payload: .still(still), fileURL: result.url, recordID: result.recordID)
-            saveButton?.setSymbol("folder", tooltip: "Reveal in Finder")
             refreshTooltip()
             Toast.show("Saved", symbol: "arrow.down.circle")
         }
@@ -1082,9 +891,9 @@ private final class QAOStaticImageView: NSImageView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
-/// Thumbnail image, layer-hosted. The card is sized to the image's own aspect,
-/// so the whole shot fills it exactly — aspect-fit guarantees nothing is ever
-/// cropped or cut off (any sub-pixel rounding letterboxes invisibly, never cuts).
+/// Thumbnail image, layer-hosted. Aspect-fit inside the fixed card frame — the
+/// whole shot always shows, zoomed out if needed, never cropped; leftover space
+/// letterboxes/pillarboxes against the blur material.
 private final class QAOFillImageView: NSView {
     var image: NSImage? { didSet { layer?.contents = image } }
 
@@ -1099,34 +908,11 @@ private final class QAOFillImageView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
-/// A cell of the corner pill: bare glyph at rest, the whole cell fills on
-/// hover (maskedCorners lets end cells round with the capsule).
-private final class QAOSegmentButton: NSButton {
-    override func updateTrackingAreas() {
-        trackingAreas.forEach(removeTrackingArea)
-        addTrackingArea(NSTrackingArea(
-            rect: .zero,
-            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
-            owner: self, userInfo: nil))
-        super.updateTrackingAreas()
-    }
-
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-
-    override func mouseEntered(with event: NSEvent) {
-        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.14).cgColor
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        layer?.backgroundColor = nil
-    }
-}
-
-/// Card hover action: CleanShot-style light disc with a dark glyph — reads
-/// against any image, unlike white-on-translucent-white.
+/// Card hover action: CleanShot-style frosted off-white disc (translucent, not
+/// solid white) with a bold dark glyph — reads against any image.
 private final class QAOIconButton: NSButton {
-    private static let restBackground = NSColor.white.withAlphaComponent(0.92).cgColor
-    private static let hoverBackground = NSColor.white.cgColor
+    private static let restBackground = NSColor.white.withAlphaComponent(0.72).cgColor
+    private static let hoverBackground = NSColor.white.withAlphaComponent(0.95).cgColor
 
     init(
         symbol: String, tooltip: String, target: AnyObject, action: Selector,
@@ -1136,7 +922,7 @@ private final class QAOIconButton: NSButton {
         isBordered = false
         imagePosition = .imageOnly
         setSymbol(symbol, tooltip: tooltip, symbolSize: symbolSize)
-        contentTintColor = NSColor.black.withAlphaComponent(0.82)
+        contentTintColor = NSColor.black.withAlphaComponent(0.85)
         self.target = target
         self.action = action
         wantsLayer = true
@@ -1145,7 +931,7 @@ private final class QAOIconButton: NSButton {
         // Float above the blurred image on anything bright.
         layer?.masksToBounds = false
         layer?.shadowColor = NSColor.black.cgColor
-        layer?.shadowOpacity = 0.25
+        layer?.shadowOpacity = 0.2
         layer?.shadowRadius = 3
         layer?.shadowOffset = CGSize(width: 0, height: -1)
     }
@@ -1153,7 +939,7 @@ private final class QAOIconButton: NSButton {
     required init?(coder: NSCoder) { fatalError("not used") }
 
     func setSymbol(_ symbol: String, tooltip: String, symbolSize: CGFloat = 14) {
-        let config = NSImage.SymbolConfiguration(pointSize: symbolSize, weight: .medium)
+        let config = NSImage.SymbolConfiguration(pointSize: symbolSize, weight: .bold)
         image = NSImage(systemSymbolName: symbol, accessibilityDescription: tooltip)?
             .withSymbolConfiguration(config)
         toolTip = tooltip
